@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import interactionPlugin from "@fullcalendar/interaction";
@@ -26,6 +26,7 @@ type AppointmentsCalendarProps = {
 
 export function AppointmentsCalendar({ onSlotSelect }: AppointmentsCalendarProps) {
   const router = useRouter();
+  const calendarRef = useRef<FullCalendar | null>(null);
   const [isCompact, setIsCompact] = useState(false);
 
   useEffect(() => {
@@ -78,24 +79,31 @@ export function AppointmentsCalendar({ onSlotSelect }: AppointmentsCalendarProps
         timeGridWeek: "Semana",
         dayGridMonth: "Mes",
       }}
+      customButtons={{
+        prevPeriod: {
+          text: "Ant.",
+          click: () => calendarRef.current?.getApi().prev(),
+        },
+        nextPeriod: {
+          text: "Prox.",
+          click: () => calendarRef.current?.getApi().next(),
+        },
+      }}
       contentHeight={isCompact ? 560 : 720}
       editable={false}
       eventClick={handleEventClick}
       events={loadEvents}
       expandRows
       headerToolbar={{
-        left: isCompact ? "prev,next" : "prev,next today",
+        left: isCompact ? "prevPeriod,nextPeriod" : "prevPeriod,nextPeriod today",
         center: "title",
         right: isCompact ? "timeGridDay,timeGridWeek" : "timeGridDay,timeGridWeek,dayGridMonth",
       }}
       initialView="timeGridDay"
       locale={ptBrLocale}
       nextDayThreshold="00:00:00"
-      nextHint="Proximo periodo"
-      nextText="Prox."
       plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
-      prevHint="Periodo anterior"
-      prevText="Ant."
+      ref={calendarRef}
       select={handleSelect}
       selectable
       selectMirror
