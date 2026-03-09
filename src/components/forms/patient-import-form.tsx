@@ -25,6 +25,20 @@ type PreviewPayload = {
   };
 };
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export function PatientImportForm() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
@@ -51,14 +65,14 @@ export function PatientImportForm() {
         body: buildFormData(),
       });
 
-      const payload = await response.json();
+      const payload = (await readJsonResponse(response)) as PreviewPayload & { message?: string } | null;
 
       if (!response.ok) {
-        toast.error(payload.message ?? "Nao foi possivel analisar o arquivo.");
+        toast.error(payload?.message ?? "Nao foi possivel analisar o arquivo.");
         return;
       }
 
-      setPreview(payload);
+      setPreview(payload as PreviewPayload);
       toast.success("Preview de importacao gerado.");
     });
   };
@@ -74,14 +88,16 @@ export function PatientImportForm() {
         body: buildFormData(),
       });
 
-      const payload = await response.json();
+      const payload = (await readJsonResponse(response)) as
+        | { importedCount?: number; message?: string }
+        | null;
 
       if (!response.ok) {
-        toast.error(payload.message ?? "Nao foi possivel importar os pacientes.");
+        toast.error(payload?.message ?? "Nao foi possivel importar os pacientes.");
         return;
       }
 
-      toast.success(`${payload.importedCount} pacientes importados com sucesso.`);
+      toast.success(`${payload?.importedCount ?? 0} pacientes importados com sucesso.`);
       setFile(null);
       setPreview(null);
       router.refresh();
