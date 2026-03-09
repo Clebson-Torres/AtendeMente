@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectExistingPatientDuplicates,
   detectImportedPatientDuplicates,
+  normalizeImportedBirthDate,
   parsePatientsCsv,
   parsePatientsSpreadsheet,
 } from "@/features/patients/import";
@@ -47,6 +48,12 @@ describe("patient import", () => {
     expect(preview.rows).toHaveLength(1);
     expect(preview.rows[0]?.fullName).toBe("Evandro Evangelista Do Nascimento");
     expect(preview.rows[0]?.birthDate).toBe("27/05/1992");
+  });
+
+  it("normalizes imported birth dates from brazilian format to iso", () => {
+    expect(normalizeImportedBirthDate("27/05/1992")).toBe("1992-05-27");
+    expect(normalizeImportedBirthDate("1992-05-27")).toBe("1992-05-27");
+    expect(normalizeImportedBirthDate("")).toBe("");
   });
 
   it("detects duplicate imported patients", () => {

@@ -5,6 +5,7 @@ import { patients } from "@/db/schema";
 import {
   detectExistingPatientDuplicates,
   detectImportedPatientDuplicates,
+  normalizeImportedBirthDate,
   parsePatientsSpreadsheet,
 } from "@/features/patients/import";
 import { writeAuditLog } from "@/lib/audit/log";
@@ -65,7 +66,7 @@ export async function POST(request: Request) {
         fullName: row.fullName,
         phone: row.phone || null,
         email: row.email || null,
-        birthDate: row.birthDate || null,
+        birthDate: normalizeImportedBirthDate(row.birthDate) || null,
         emergencyPhone: row.emergencyPhone || null,
         medicationsInUse: row.medicationsInUse || null,
         healthHistory: row.healthHistory || null,
