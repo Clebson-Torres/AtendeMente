@@ -220,7 +220,14 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
             id="healthHistorySearch"
             placeholder="Digite para buscar uma sugestao ou adicione um item livre"
             value={healthSearch}
-            onChange={(event) => setHealthSearch(event.target.value)}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setHealthSearch(nextValue);
+              form.setValue("healthHistory", buildHealthHistoryValue(selectedHealthItems, nextValue), {
+                shouldDirty: true,
+                shouldValidate: true,
+              });
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === ",") {
                 event.preventDefault();
