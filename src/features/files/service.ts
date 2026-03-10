@@ -15,15 +15,13 @@ function makeStoragePath(userId: string, patientId: string, appointmentId: strin
   return `${userId}/${patientId}/${appointmentId}/${randomUUID()}${ext}`;
 }
 
-function hasAllowedExtension(fileName: string) {
-  const normalizedName = fileName.toLowerCase();
-  return allowedFileExtensions.some((extension) => normalizedName.endsWith(extension));
-}
-
 export async function createUploadSession(userId: string, input: FileUploadRequest) {
   const db = getDb();
 
-  if (!hasAllowedExtension(input.fileName)) {
+  const normalizedFileName = input.fileName.toLowerCase();
+  const hasAllowedExtension = allowedFileExtensions.some((extension) => normalizedFileName.endsWith(extension));
+
+  if (!hasAllowedExtension) {
     throw new AppError("Extensao de arquivo nao permitida.", { statusCode: 400 });
   }
 
