@@ -3,7 +3,7 @@ import { recordFileKinds } from "@/types/domain";
 
 export const allowedFileExtensions = [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg"] as const;
 
-const allowedMimeTypes = [
+export const allowedMimeTypes = [
   "application/pdf",
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
