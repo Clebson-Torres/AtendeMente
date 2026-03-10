@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { appointments, payments, recordFiles } from "@/db/schema";
+import { allowedFileExtensions, allowedMimeTypes } from "@/features/files/schemas";
 import { writeAuditLog } from "@/lib/audit/log";
 import { getStorageBucket } from "@/lib/env";
 import { AppError } from "@/lib/errors/app-error";
@@ -13,6 +14,25 @@ import type { FileUploadRequest } from "@/features/files/schemas";
 function makeStoragePath(userId: string, patientId: string, appointmentId: string, fileName: string) {
   const ext = path.extname(fileName).toLowerCase();
   return `${userId}/${patientId}/${appointmentId}/${randomUUID()}${ext}`;
+}
+
+function getNormalizedExtension(fileName: string) {
+  return path.extname(fileName).toLowerCase();
+}
+
+function getStoredMimeType(fileInfo: { content_type?: string | null; metadata?: { mimetype?: string | null } | null }) {
+  return fileInfo.content_type ?? fileInfo.metadata?.mimetype ?? "";
+}
+
+async function rejectUploadedFile(fileId: string, storagePath: string) {
+  const adminClient = createAdminSupabaseClient();
+  await adminClient.storage.from(getStorageBucket()).remove([storagePath]);
+  await getDb()
+    .update(recordFiles)
+    .set({
+      deletedAt: new Date(),
+    })
+    .where(eq(recordFiles.id, fileId));
 }
 
 export async function createUploadSession(userId: string, input: FileUploadRequest) {
@@ -107,12 +127,40 @@ export async function confirmUpload(userId: string, fileId: string) {
       paymentId: recordFiles.paymentId,
       kind: recordFiles.kind,
       originalName: recordFiles.originalName,
+      storagePath: recordFiles.storagePath,
+      mimeType: recordFiles.mimeType,
+      byteSize: recordFiles.byteSize,
     })
     .from(recordFiles)
     .where(and(eq(recordFiles.id, fileId), eq(recordFiles.userId, userId), isNull(recordFiles.deletedAt)));
 
   if (!file) {
     throw new AppError("Arquivo nao encontrado.", { statusCode: 404 });
+  }
+
+  const adminClient = createAdminSupabaseClient();
+  const { data: uploadedFile, error } = await adminClient.storage.from(getStorageBucket()).info(file.storagePath);
+
+  if (error || !uploadedFile) {
+    throw new AppError("Nao foi possivel validar o arquivo enviado.", { statusCode: 400 });
+  }
+
+  const storedMimeType = getStoredMimeType(uploadedFile);
+  const storedSize = uploadedFile.size ?? uploadedFile.metadata?.size ?? 0;
+  const hasAllowedExtension = allowedFileExtensions.includes(
+    getNormalizedExtension(file.originalName) as (typeof allowedFileExtensions)[number],
+  );
+  const hasAllowedMimeType = allowedMimeTypes.includes(
+    storedMimeType as (typeof allowedMimeTypes)[number],
+  );
+  const matchesExpectedFile = storedMimeType === file.mimeType && storedSize === file.byteSize;
+
+  if (!hasAllowedExtension || !hasAllowedMimeType || !matchesExpectedFile) {
+    await rejectUploadedFile(file.id, file.storagePath);
+    throw new AppError("Arquivo rejeitado pela validacao de seguranca.", {
+      statusCode: 400,
+      code: "FILE_VALIDATION_FAILED",
+    });
   }
 
   await writeAuditLog({

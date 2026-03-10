@@ -20,6 +20,14 @@ function isMissingRateLimitTableError(error: unknown) {
   );
 }
 
+function throwRateLimitUnavailable(error: unknown): never {
+  console.error("Rate limit infrastructure unavailable", error);
+  throw new AppError("Servico temporariamente indisponivel.", {
+    statusCode: 503,
+    code: "RATE_LIMIT_UNAVAILABLE",
+  });
+}
+
 export async function enforceRateLimit({ scope, identifier, limit, windowMs }: RateLimitInput) {
   const db = getDb();
   const now = new Date();
@@ -43,7 +51,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
     });
   } catch (error) {
     if (isMissingRateLimitTableError(error)) {
-      return;
+      throwRateLimitUnavailable(error);
     }
 
     throw error;
@@ -59,7 +67,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
       });
     } catch (error) {
       if (isMissingRateLimitTableError(error)) {
-        return;
+        throwRateLimitUnavailable(error);
       }
 
       throw error;
@@ -99,7 +107,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
       .where(eq(requestLimits.id, existing.id));
   } catch (error) {
     if (isMissingRateLimitTableError(error)) {
-      return;
+      throwRateLimitUnavailable(error);
     }
 
     throw error;
