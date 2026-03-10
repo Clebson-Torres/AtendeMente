@@ -34,11 +34,13 @@ async function rejectUploadedFile(fileId: string, storagePath: string) {
     })
     .where(eq(recordFiles.id, fileId));
 }
-
 export async function createUploadSession(userId: string, input: FileUploadRequest) {
   const db = getDb();
 
-  if (!hasAllowedExtension(input.fileName)) {
+  const normalizedFileName = input.fileName.toLowerCase();
+  const hasAllowedExtension = allowedFileExtensions.some((extension) => normalizedFileName.endsWith(extension));
+
+  if (!hasAllowedExtension) {
     throw new AppError("Extensao de arquivo nao permitida.", { statusCode: 400 });
   }
 
