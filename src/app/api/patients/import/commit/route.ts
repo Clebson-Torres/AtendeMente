@@ -10,6 +10,7 @@ import {
 } from "@/features/patients/import";
 import { writeAuditLog } from "@/lib/audit/log";
 import { getCurrentUser } from "@/lib/auth/session";
+import { AppError } from "@/lib/errors/app-error";
 import { enforceRateLimit } from "@/lib/security/rate-limit";
 
 export async function POST(request: Request) {
@@ -91,6 +92,10 @@ export async function POST(request: Request) {
       duplicateRows: duplicates.length + existingDuplicates.length,
     });
   } catch (error) {
+    if (error instanceof AppError) {
+      return NextResponse.json({ message: error.message }, { status: error.statusCode });
+    }
+
     const databaseError = error as { code?: string; message?: string };
 
     if (databaseError?.code === "42703" || databaseError?.code === "42P01") {

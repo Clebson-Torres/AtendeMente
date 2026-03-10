@@ -10,13 +10,13 @@ type ExportRouteProps = {
 };
 
 export async function GET(_: Request, { params }: ExportRouteProps) {
-  const user = await getCurrentUser();
-
-  if (!user) {
-    return Response.json({ message: "Nao autenticado." }, { status: 401 });
-  }
-
   try {
+    const user = await getCurrentUser();
+
+    if (!user) {
+      return Response.json({ message: "Nao autenticado." }, { status: 401 });
+    }
+
     await enforceRateLimit({
       scope: "patients:export",
       identifier: user.id,

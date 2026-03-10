@@ -6,6 +6,7 @@ import { CalendarDays, CreditCard, House, LogOut, UsersRound } from "lucide-reac
 import { signOutAction } from "@/features/auth/actions";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { SiteFooterLinks } from "@/components/shell/site-footer-links";
 
 const navigation = [
   { href: "/dashboard", label: "Visao geral", icon: House },
@@ -98,6 +99,7 @@ export function AppShell({ userName, userEmail, children }: AppShellProps) {
           </div>
 
           <main className="min-w-0 space-y-6 py-0 lg:py-1">{children}</main>
+          <SiteFooterLinks className="border-t border-border/60 pt-4" />
         </div>
       </div>
     </div>

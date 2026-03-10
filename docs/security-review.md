@@ -2,9 +2,9 @@
 
 ## Resumo executivo
 
-O AtendeMente esta em um patamar melhor de seguranca para um MVP comercial controlado: autenticacao via Supabase Auth, isolamento por `user_id` com RLS, bucket privado, downloads autorizados por backend, criptografia `AES-256-GCM` para registros textuais, auditoria de eventos criticos, headers HTTP de seguranca e rate limiting nas rotas sensiveis principais.
+O AtendeMente esta em um patamar consistente para venda controlada: autenticacao via Supabase Auth, isolamento por `user_id` com RLS, bucket privado, downloads autorizados por backend, criptografia `AES-256-GCM` para registros textuais, auditoria de eventos criticos, headers HTTP de seguranca, rate limiting nas rotas sensiveis principais e validacao reforcada de upload no backend.
 
-Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato oficial de importacao, o maior risco imediato de supply chain foi reduzido. O produto ainda nao deve ser tratado como endurecimento maximo de producao, mas agora esta mais proximo de um piloto pago com operacao controlada.
+Com a remocao do suporte a `.xls/.xlsx`, o retorno para `CSV` como formato oficial de importacao e o hardening recente do fluxo de upload, o maior risco imediato de supply chain foi reduzido. O produto ainda nao deve ser tratado como endurecimento maximo de producao, mas agora esta mais proximo de uma venda controlada com operacao guiada.
 
 ## Controles existentes
 
@@ -26,8 +26,9 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 
 - bucket privado no Supabase Storage.
 - upload iniciado por backend com validacao e URL assinada.
+- validacao de extensao permitida antes do signed upload.
+- confirmacao do upload baseada no objeto real do bucket, com verificacao de tipo e tamanho.
 - download apenas via backend autenticado.
-- arquivos vinculados a paciente e atendimento.
 
 ### Criptografia
 
@@ -53,6 +54,8 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
   - `Referrer-Policy`
   - `Permissions-Policy`
   - `Content-Security-Policy`
+- `unsafe-eval` removido em producao.
+- `object-src 'none'` aplicado.
 
 ### Rate limiting
 
@@ -62,6 +65,7 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
   - upload
   - importacao
   - exportacao
+- falha de infraestrutura de rate limit agora fecha o fluxo com erro controlado, em vez de desligar a protecao silenciosamente.
 
 ## Achados e riscos priorizados
 
@@ -70,29 +74,29 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 #### 1. Rate limiting ainda e local ao banco da aplicacao
 
 - Evidencia:
-  - os limites agora existem, mas dependem do banco principal e nao de uma camada dedicada de edge/KV.
+  - os limites agora existem e falham de forma fechada se a tabela operacional estiver ausente, mas continuam dependentes do banco principal e nao de uma camada dedicada de edge/KV.
 - Impacto:
-  - suficiente para MVP controlado, mas nao ideal para carga maior ou protecao distribuida.
+  - suficiente para venda controlada, mas nao ideal para carga maior ou protecao distribuida.
 - Tipo:
   - risco estrutural / operacional.
 - Recomendacao:
   - medio prazo: mover limites para camada mais apropriada de edge/KV ou provedor gerenciado.
 
-#### 2. CSP ainda e conservadora e pode ser refinada
+#### 2. CSP ainda pode ser refinada
 
 - Evidencia:
-  - a politica atual privilegia compatibilidade com Next e Supabase.
+  - `unsafe-eval` saiu de producao, mas `unsafe-inline` ainda permanece por compatibilidade com o app atual.
 - Impacto:
-  - melhora o baseline, mas ainda pode ser endurecida para reduzir superfícies desnecessarias.
+  - baseline melhor, mas ainda existe margem para endurecimento adicional.
 - Tipo:
   - risco operacional/configuracao.
 - Recomendacao:
-  - revisar CSP em ambiente real e restringir ainda mais origens e diretivas.
+  - revisar CSP em ambiente real e migrar gradualmente para nonce/hash quando viavel.
 
 #### 3. Convites dependem de operacao controlada
 
 - Evidencia:
-  - onboarding esta restrito a convites enviados com service role.
+  - onboarding continua restrito a convites enviados com service role.
 - Impacto:
   - positivo para seguranca, mas requer processo operacional claro para nao virar gargalo.
 - Tipo:
@@ -105,7 +109,7 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 #### 4. Mensagens externas ainda podem ser mais neutras em alguns fluxos
 
 - Evidencia:
-  - parte das rotas ainda retorna mensagens funcionais relativamente especificas.
+  - parte das rotas e actions ainda responde com mensagens funcionais relativamente especificas.
 - Impacto:
   - baixo para o momento, mas vale reduzir pistas em ambiente comercial.
 - Tipo:
@@ -132,6 +136,12 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 - A importacao oficial agora usa apenas `CSV` exportado do Excel.
 - Isso reduz o risco associado a parsing de planilhas binarias e elimina a dependencia `xlsx` do projeto.
 
+### Validacao reforcada de upload
+
+- O backend agora valida extensao permitida antes do signed upload.
+- Na confirmacao, o arquivo real no bucket e conferido por tipo e tamanho antes de ser aceito.
+- Upload adulterado e removido do storage e o registro correspondente e invalidado.
+
 ## Pontos fortes do estado atual
 
 - Isolamento por usuario esta bem modelado em banco e aplicacao.
@@ -139,6 +149,7 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 - Download privado continua mediado pelo backend.
 - Exportacao de paciente respeita autorizacao e gera auditoria.
 - Onboarding por convite reduz exposicao operacional em comparacao com signup publico.
+- O build de release passa com limpeza de artefatos do Next antes da geracao da versao final.
 
 ## Recomendacoes priorizadas
 
@@ -147,12 +158,14 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 1. Manter onboarding apenas por convite enquanto o produto amadurece.
 2. Aplicar todas as migrations novas no Supabase antes de comercializar.
 3. Revisar email templates do Supabase para convite e reset de senha.
+4. Publicar e revisar os documentos legais minimos (`/privacidade`, `/termos`, `/lgpd`).
 
 ### Curto prazo
 
 1. Refinar CSP com base no ambiente real de producao.
 2. Padronizar mensagens externas mais neutras em todas as rotas sensiveis.
 3. Criar rotina operacional de convites e recuperacao de conta.
+4. Formalizar checklist de lancamento e rotina de backup/restauracao.
 
 ### Medio prazo
 
@@ -169,11 +182,11 @@ Com a remocao do suporte a `.xls/.xlsx` e o retorno para `CSV` como formato ofic
 ## Nota de prontidao comercial
 
 - Antes desta rodada: `62/100`
-- Depois desta rodada, com as medidas aplicadas no codigo: estimativa de `78/100`
+- Depois desta rodada, com as medidas aplicadas no codigo: estimativa de `82/100` para venda controlada
 
-### O que ainda falta para 80+
+### O que ainda falta para 85+
 
-- aplicar migrations novas no ambiente real
 - validar convite e reset de senha ponta a ponta no Supabase web
+- reforcar e2e autenticado para os fluxos principais
 - revisar templates e entregabilidade de email
 - endurecer mais a operacao de producao

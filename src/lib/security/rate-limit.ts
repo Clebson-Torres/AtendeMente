@@ -22,9 +22,9 @@ function isMissingRateLimitTableError(error: unknown) {
 
 function throwRateLimitUnavailable(error: unknown): never {
   console.error("Rate limit infrastructure unavailable", error);
-  throw new AppError("Servico temporariamente indisponivel.", {
+  throw new AppError("Protecao temporariamente indisponivel. Tente novamente em instantes.", {
     statusCode: 503,
-    code: "RATE_LIMIT_UNAVAILABLE",
+    code: "RATE_LIMIT_INFRA_UNAVAILABLE",
   });
 }
 

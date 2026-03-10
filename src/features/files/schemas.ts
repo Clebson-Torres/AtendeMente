@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { recordFileKinds } from "@/types/domain";
 
+export const allowedFileExtensions = [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg"] as const;
+
 export const allowedMimeTypes = [
   "application/pdf",
   "application/msword",
@@ -8,8 +10,6 @@ export const allowedMimeTypes = [
   "image/png",
   "image/jpeg",
 ] as const;
-
-export const allowedFileExtensions = [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg"] as const;
 
 export const fileUploadRequestSchema = z.object({
   appointmentId: z.uuid("Atendimento invalido."),
@@ -20,8 +20,8 @@ export const fileUploadRequestSchema = z.object({
   fileSize: z.number().int().positive().max(10 * 1024 * 1024, "Arquivo acima de 10 MB."),
   mimeType: z.enum(allowedMimeTypes, "Formato de arquivo nao permitido."),
 }).superRefine((value, ctx) => {
-  const lowerName = value.fileName.toLowerCase();
-  const hasAllowedExtension = allowedFileExtensions.some((extension) => lowerName.endsWith(extension));
+  const normalizedName = value.fileName.toLowerCase();
+  const hasAllowedExtension = allowedFileExtensions.some((extension) => normalizedName.endsWith(extension));
 
   if (!hasAllowedExtension) {
     ctx.addIssue({

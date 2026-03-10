@@ -5,6 +5,7 @@ import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import { writeAuditLog } from "@/lib/audit/log";
 import { getCurrentUser } from "@/lib/auth/session";
 import { getOptionalEnv } from "@/lib/env";
+import { AppError } from "@/lib/errors/app-error";
 import { enforceRateLimit } from "@/lib/security/rate-limit";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { forgotPasswordSchema, loginSchema } from "@/features/auth/schemas";
@@ -14,116 +15,158 @@ export async function signInAction(
   input: unknown,
   redirectTo = "/dashboard",
 ): Promise<ActionResponse<{ redirectTo: string }>> {
-  const parsed = loginSchema.safeParse(input);
+  try {
+    const parsed = loginSchema.safeParse(input);
 
-  if (!parsed.success) {
+    if (!parsed.success) {
+      return {
+        success: false,
+        message: "Verifique os campos obrigatorios.",
+        errors: parsed.error.flatten().fieldErrors,
+      };
+    }
+
+    await enforceRateLimit({
+      scope: "auth:login",
+      identifier: `${parsed.data.email.toLowerCase()}`,
+      limit: 5,
+      windowMs: 10 * 60 * 1000,
+    });
+
+    const supabase = await createServerSupabaseClient();
+    const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
+
+    if (error || !data.user) {
+      return {
+        success: false,
+        message: "Nao foi possivel entrar. Confira email e senha.",
+      };
+    }
+
+    await writeAuditLog({
+      userId: data.user.id,
+      action: "login",
+      entityType: "auth",
+      entityId: data.user.id,
+    });
+
+    return {
+      success: true,
+      message: "Login realizado com sucesso.",
+      data: { redirectTo },
+    };
+  } catch (error) {
+    if (error instanceof AppError) {
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+
     return {
       success: false,
-      message: "Verifique os campos obrigatorios.",
-      errors: parsed.error.flatten().fieldErrors,
+      message: "Nao foi possivel entrar agora. Tente novamente em instantes.",
     };
   }
-
-  await enforceRateLimit({
-    scope: "auth:login",
-    identifier: `${parsed.data.email.toLowerCase()}`,
-    limit: 5,
-    windowMs: 10 * 60 * 1000,
-  });
-
-  const supabase = await createServerSupabaseClient();
-  const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
-
-  if (error || !data.user) {
-    return {
-      success: false,
-      message: "Nao foi possivel entrar. Confira email e senha.",
-    };
-  }
-
-  await writeAuditLog({
-    userId: data.user.id,
-    action: "login",
-    entityType: "auth",
-    entityId: data.user.id,
-  });
-
-  return {
-    success: true,
-    message: "Login realizado com sucesso.",
-    data: { redirectTo },
-  };
 }
 
 export async function sendPasswordResetAction(input: unknown): Promise<ActionResponse> {
-  const parsed = forgotPasswordSchema.safeParse(input);
+  try {
+    const parsed = forgotPasswordSchema.safeParse(input);
 
-  if (!parsed.success) {
+    if (!parsed.success) {
+      return {
+        success: false,
+        message: "Informe um email valido.",
+        errors: parsed.error.flatten().fieldErrors,
+      };
+    }
+
+    await enforceRateLimit({
+      scope: "auth:password-reset",
+      identifier: parsed.data.email.toLowerCase(),
+      limit: 3,
+      windowMs: 15 * 60 * 1000,
+    });
+
+    const supabase = await createServerSupabaseClient();
+    const appUrl = getOptionalEnv("NEXT_PUBLIC_APP_URL") ?? "http://localhost:3000";
+    await supabase.auth.resetPasswordForEmail(parsed.data.email, {
+      redirectTo: `${appUrl}/reset-password`,
+    });
+
+    return {
+      success: true,
+      message: "Se o email existir, enviaremos um link para redefinir a senha.",
+    };
+  } catch (error) {
+    if (error instanceof AppError) {
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+
     return {
       success: false,
-      message: "Informe um email valido.",
-      errors: parsed.error.flatten().fieldErrors,
+      message: "Nao foi possivel solicitar a redefinicao agora.",
     };
   }
-
-  await enforceRateLimit({
-    scope: "auth:password-reset",
-    identifier: parsed.data.email.toLowerCase(),
-    limit: 3,
-    windowMs: 15 * 60 * 1000,
-  });
-
-  const supabase = await createServerSupabaseClient();
-  const appUrl = getOptionalEnv("NEXT_PUBLIC_APP_URL") ?? "http://localhost:3000";
-  await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    redirectTo: `${appUrl}/reset-password`,
-  });
-
-  return {
-    success: true,
-    message: "Se o email existir, enviaremos um link para redefinir a senha.",
-  };
 }
 
 export async function sendInviteAction(
   input: { email: string; fullName?: string | null },
 ): Promise<ActionResponse> {
-  const email = input.email.trim().toLowerCase();
+  try {
+    const email = input.email.trim().toLowerCase();
 
-  if (!email) {
+    if (!email) {
+      return {
+        success: false,
+        message: "Informe um email valido para convite.",
+      };
+    }
+
+    await enforceRateLimit({
+      scope: "auth:invite",
+      identifier: email,
+      limit: 3,
+      windowMs: 30 * 60 * 1000,
+    });
+
+    const admin = createAdminSupabaseClient();
+    const appUrl = getOptionalEnv("NEXT_PUBLIC_APP_URL") ?? "http://localhost:3000";
+    const { error } = await admin.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `${appUrl}/accept-invite`,
+      data: {
+        full_name: input.fullName ?? "",
+      },
+    });
+
+    if (error) {
+      return {
+        success: false,
+        message: "Nao foi possivel enviar o convite agora.",
+      };
+    }
+
     return {
-      success: false,
-      message: "Informe um email valido para convite.",
+      success: true,
+      message: "Convite enviado com sucesso.",
     };
-  }
+  } catch (error) {
+    if (error instanceof AppError) {
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
 
-  await enforceRateLimit({
-    scope: "auth:invite",
-    identifier: email,
-    limit: 3,
-    windowMs: 30 * 60 * 1000,
-  });
-
-  const admin = createAdminSupabaseClient();
-  const appUrl = getOptionalEnv("NEXT_PUBLIC_APP_URL") ?? "http://localhost:3000";
-  const { error } = await admin.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${appUrl}/accept-invite`,
-    data: {
-      full_name: input.fullName ?? "",
-    },
-  });
-
-  if (error) {
     return {
       success: false,
       message: "Nao foi possivel enviar o convite agora.",
     };
   }
-
-  return {
-    success: true,
-    message: "Convite enviado com sucesso.",
-  };
 }
 
 export async function signOutAction() {

@@ -37,6 +37,11 @@ async function rejectUploadedFile(fileId: string, storagePath: string) {
 
 export async function createUploadSession(userId: string, input: FileUploadRequest) {
   const db = getDb();
+
+  if (!hasAllowedExtension(input.fileName)) {
+    throw new AppError("Extensao de arquivo nao permitida.", { statusCode: 400 });
+  }
+
   const [appointment] = await db
     .select({
       id: appointments.id,

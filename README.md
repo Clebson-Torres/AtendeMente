@@ -54,6 +54,8 @@ SUPABASE_SERVICE_ROLE_KEY=...
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
 APP_ENCRYPTION_KEY=base64-encoded-32-byte-key
 PRIVATE_STORAGE_BUCKET=private-record-files
+E2E_EMAIL=demo@atendemente.local
+E2E_PASSWORD=AtendeMente123!
 ```
 
 Para gerar uma chave valida:
@@ -120,10 +122,30 @@ npm run test
 npm run test:unit
 npm run test:integration
 npm run test:e2e
+npm run verify:release
 npm run db:reset
 npm run seed:demo
 npm run invite:user -- email@dominio.com "Nome Opcional"
 ```
+
+## Release gate
+
+Antes de qualquer deploy, execute:
+
+```bash
+npm run verify:release
+```
+
+O build agora limpa `.next` antes de gerar a versao de producao, reduzindo risco de artefato stale entre ambientes.
+
+Para os e2e autenticados de negocio, configure em `.env.local`:
+
+```bash
+E2E_EMAIL=demo@atendemente.local
+E2E_PASSWORD=AtendeMente123!
+```
+
+Se estiver usando Supabase local, rode `npm run seed:demo` antes da suite ponta a ponta.
 
 ## Seguranca implementada
 
@@ -161,3 +183,8 @@ npm run invite:user -- email@dominio.com "Nome Opcional"
 - O banco local pode ser acessado diretamente via `DATABASE_URL`; por isso os servicos sempre filtram por `actorUserId`, mesmo com RLS ativo.
 - O bucket privado e criado pela migration inicial com limite de 10 MB e MIME types controlados.
 - O formato oficial de importacao comercial e `CSV` exportado do Excel.
+- Os documentos publicos minimos ficam em:
+  - `/privacidade`
+  - `/termos`
+  - `/lgpd`
+- A checklist operacional de lancamento esta em `docs/launch-checklist.md`.
