@@ -8,15 +8,25 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { getStorageBucket } from "@/lib/env";
 import { AppError } from "@/lib/errors/app-error";
 import { createAdminSupabaseClient } from "@/lib/supabase/admin";
-import type { FileUploadRequest } from "@/features/files/schemas";
+import { allowedFileExtensions, type FileUploadRequest } from "@/features/files/schemas";
 
 function makeStoragePath(userId: string, patientId: string, appointmentId: string, fileName: string) {
   const ext = path.extname(fileName).toLowerCase();
   return `${userId}/${patientId}/${appointmentId}/${randomUUID()}${ext}`;
 }
 
+function hasAllowedExtension(fileName: string) {
+  const normalizedName = fileName.toLowerCase();
+  return allowedFileExtensions.some((extension) => normalizedName.endsWith(extension));
+}
+
 export async function createUploadSession(userId: string, input: FileUploadRequest) {
   const db = getDb();
+
+  if (!hasAllowedExtension(input.fileName)) {
+    throw new AppError("Extensao de arquivo nao permitida.", { statusCode: 400 });
+  }
+
   const [appointment] = await db
     .select({
       id: appointments.id,
@@ -107,12 +117,42 @@ export async function confirmUpload(userId: string, fileId: string) {
       paymentId: recordFiles.paymentId,
       kind: recordFiles.kind,
       originalName: recordFiles.originalName,
+      mimeType: recordFiles.mimeType,
+      byteSize: recordFiles.byteSize,
+      storagePath: recordFiles.storagePath,
     })
     .from(recordFiles)
     .where(and(eq(recordFiles.id, fileId), eq(recordFiles.userId, userId), isNull(recordFiles.deletedAt)));
 
   if (!file) {
     throw new AppError("Arquivo nao encontrado.", { statusCode: 404 });
+  }
+
+  const adminClient = createAdminSupabaseClient();
+  const bucket = getStorageBucket();
+  const { data: objectInfo, error: objectInfoError } = await adminClient.storage.from(bucket).info(file.storagePath);
+  const uploadedMimeType = objectInfo?.metadata?.mimetype ?? objectInfo?.metadata?.contentType;
+  const uploadedSize = Number(objectInfo?.metadata?.size ?? NaN);
+
+  if (
+    objectInfoError ||
+    !objectInfo ||
+    !uploadedMimeType ||
+    uploadedMimeType !== file.mimeType ||
+    uploadedSize !== file.byteSize
+  ) {
+    await adminClient.storage.from(bucket).remove([file.storagePath]);
+    await db
+      .update(recordFiles)
+      .set({
+        deletedAt: new Date(),
+      })
+      .where(eq(recordFiles.id, file.id));
+
+    throw new AppError("Arquivo rejeitado pela validacao de seguranca.", {
+      statusCode: 400,
+      code: "INVALID_FILE_UPLOAD",
+    });
   }
 
   await writeAuditLog({

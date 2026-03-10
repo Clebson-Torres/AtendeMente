@@ -20,6 +20,13 @@ function isMissingRateLimitTableError(error: unknown) {
   );
 }
 
+function buildRateLimitInfraError() {
+  return new AppError("Protecao temporariamente indisponivel. Tente novamente em instantes.", {
+    statusCode: 503,
+    code: "RATE_LIMIT_INFRA_UNAVAILABLE",
+  });
+}
+
 export async function enforceRateLimit({ scope, identifier, limit, windowMs }: RateLimitInput) {
   const db = getDb();
   const now = new Date();
@@ -43,7 +50,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
     });
   } catch (error) {
     if (isMissingRateLimitTableError(error)) {
-      return;
+      throw buildRateLimitInfraError();
     }
 
     throw error;
@@ -59,7 +66,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
       });
     } catch (error) {
       if (isMissingRateLimitTableError(error)) {
-        return;
+        throw buildRateLimitInfraError();
       }
 
       throw error;
@@ -99,7 +106,7 @@ export async function enforceRateLimit({ scope, identifier, limit, windowMs }: R
       .where(eq(requestLimits.id, existing.id));
   } catch (error) {
     if (isMissingRateLimitTableError(error)) {
-      return;
+      throw buildRateLimitInfraError();
     }
 
     throw error;
