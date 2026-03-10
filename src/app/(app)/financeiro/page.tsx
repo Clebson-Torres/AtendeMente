@@ -4,7 +4,7 @@ import { MetricCard } from "@/components/shell/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { getFinancialSummary, listPayments } from "@/features/payments/queries";
+import { getFinancialSummary, listPayments, listPendingPayments } from "@/features/payments/queries";
 import { requireUser } from "@/lib/auth/session";
 import {
   describeAppointmentTime,
@@ -20,9 +20,13 @@ type FinanceiroPageProps = {
 export default async function FinanceiroPage({ searchParams }: FinanceiroPageProps) {
   const user = await requireUser();
   const params = (await searchParams) ?? {};
-  const [payments, summary] = await Promise.all([listPayments(user.id), getFinancialSummary(user.id)]);
   const statusFilter = params.status === "pending" ? "pending" : "all";
-  const filteredPayments = statusFilter === "pending" ? payments.filter((payment) => payment.status === "pending") : payments;
+  const [payments, pendingPayments, summary] = await Promise.all([
+    listPayments(user.id),
+    listPendingPayments(user.id),
+    getFinancialSummary(user.id),
+  ]);
+  const filteredPayments = statusFilter === "pending" ? pendingPayments : payments;
 
   return (
     <div className="space-y-6">
@@ -54,7 +58,7 @@ export default async function FinanceiroPage({ searchParams }: FinanceiroPagePro
           </CardTitle>
           <CardDescription>
             {statusFilter === "pending"
-              ? "Lista filtrada com os atendimentos que ainda aguardam pagamento."
+              ? "Lista filtrada com os atendimentos concluidos que ainda aguardam pagamento."
               : "Visao consolidada de status, valor recebido e forma de pagamento."}
           </CardDescription>
         </CardHeader>

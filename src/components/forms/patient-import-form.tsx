@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { FileSpreadsheet, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type PreviewPayload = {
@@ -108,15 +108,34 @@ export function PatientImportForm() {
     <div className="space-y-4">
       <div className="space-y-2">
         <Label htmlFor="patients-import-file">Arquivo CSV</Label>
-        <Input
-          id="patients-import-file"
-          accept=".csv"
-          type="file"
-          onChange={(event) => {
-            setFile(event.target.files?.[0] ?? null);
-            setPreview(null);
-          }}
-        />
+        <div className="rounded-3xl border border-border/80 bg-white p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 space-y-1">
+              <p className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                <FileSpreadsheet className="h-4 w-4 text-primary" />
+                {file ? file.name : "Nenhum arquivo selecionado"}
+              </p>
+              <p className="text-xs text-muted-foreground">Formato suportado: CSV exportado do Excel ou Google Sheets.</p>
+            </div>
+
+            <input
+              id="patients-import-file"
+              accept=".csv"
+              className="sr-only"
+              type="file"
+              onChange={(event) => {
+                setFile(event.target.files?.[0] ?? null);
+                setPreview(null);
+              }}
+            />
+            <Button asChild type="button" variant="outline">
+              <label htmlFor="patients-import-file">
+                <Upload className="h-4 w-4" />
+                Selecionar arquivo
+              </label>
+            </Button>
+          </div>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">

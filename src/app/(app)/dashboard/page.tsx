@@ -50,8 +50,8 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-end justify-between">
             <div className="space-y-2">
-              <CardTitle>Proximos atendimentos</CardTitle>
-              <CardDescription>Os compromissos mais proximos para voce se preparar com antecedencia.</CardDescription>
+              <CardTitle>Atendimentos de hoje</CardTitle>
+              <CardDescription>Veja primeiro quem sera atendido hoje e em qual horario.</CardDescription>
             </div>
             <Button asChild variant="outline">
               <Link href="/agenda">
@@ -61,26 +61,34 @@ export default async function DashboardPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
-            {data.upcomingAppointments.length ? (
-              data.upcomingAppointments.map((appointment) => (
+            {data.todaysAppointments.length ? (
+              data.todaysAppointments.map((appointment) => (
                 <Link
                   key={appointment.id}
-                  className="flex items-center justify-between rounded-3xl border border-border/70 bg-white p-4 transition hover:border-primary/30 hover:bg-muted/40"
+                  className="block rounded-3xl border border-border/70 bg-white p-4 transition hover:border-primary/30 hover:bg-muted/40"
                   href={`/appointments/${appointment.id}`}
                 >
-                  <div className="space-y-1">
-                    <p className="font-semibold text-slate-900">{appointment.patientName}</p>
-                    <p className="text-sm text-muted-foreground">{describeAppointmentTime(appointment.startsAt)}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-2">
+                      <p className="font-semibold text-slate-900">{appointment.patientName}</p>
+                      <p className="text-sm text-muted-foreground">{describeAppointmentTime(appointment.startsAt)}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant={getAppointmentStatusBadgeVariant(appointment.status)}>
+                          {getAppointmentStatusLabel(appointment.status)}
+                        </Badge>
+                        <Badge variant={getAppointmentConfirmationBadgeVariant(appointment.confirmationStatus)}>
+                          {getAppointmentConfirmationLabel(appointment.confirmationStatus)}
+                        </Badge>
+                      </div>
+                    </div>
+                    <CalendarClock className="h-5 w-5 text-primary" />
                   </div>
-                  <Badge variant={appointment.status === "scheduled" ? "default" : "secondary"}>
-                    {getAppointmentStatusLabel(appointment.status)}
-                  </Badge>
                 </Link>
               ))
             ) : (
               <EmptyState
-                title="Nenhum atendimento futuro"
-                description="Assim que voce cadastrar a agenda, os proximos compromissos aparecerao aqui."
+                title="Nenhum atendimento hoje"
+                description="Assim que voce cadastrar compromissos para o dia, eles aparecerao aqui."
               />
             )}
           </CardContent>
@@ -89,32 +97,28 @@ export default async function DashboardPage() {
         <div className="space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>Atendimentos de hoje</CardTitle>
-              <CardDescription>Veja primeiro quem sera atendido hoje e em qual horario.</CardDescription>
+              <CardTitle>Proximos atendimentos</CardTitle>
+              <CardDescription>Os compromissos mais proximos para voce se preparar com antecedencia.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {data.todaysAppointments.length ? (
-                data.todaysAppointments.map((appointment) => (
-                  <div key={appointment.id} className="rounded-3xl bg-muted/40 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="space-y-2">
-                        <p className="font-semibold">{appointment.patientName}</p>
-                        <p className="text-sm text-muted-foreground">{describeAppointmentTime(appointment.startsAt)}</p>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={getAppointmentStatusBadgeVariant(appointment.status)}>
-                            {getAppointmentStatusLabel(appointment.status)}
-                          </Badge>
-                          <Badge variant={getAppointmentConfirmationBadgeVariant(appointment.confirmationStatus)}>
-                            {getAppointmentConfirmationLabel(appointment.confirmationStatus)}
-                          </Badge>
-                        </div>
-                      </div>
-                      <CalendarClock className="h-5 w-5 text-primary" />
+              {data.upcomingAppointments.length ? (
+                data.upcomingAppointments.map((appointment) => (
+                  <Link
+                    key={appointment.id}
+                    className="flex items-center justify-between rounded-3xl bg-muted/40 p-4 transition hover:bg-muted/60"
+                    href={`/appointments/${appointment.id}`}
+                  >
+                    <div className="space-y-1">
+                      <p className="font-semibold">{appointment.patientName}</p>
+                      <p className="text-sm text-muted-foreground">{describeAppointmentTime(appointment.startsAt)}</p>
                     </div>
-                  </div>
+                    <Badge variant={appointment.status === "scheduled" ? "default" : "secondary"}>
+                      {getAppointmentStatusLabel(appointment.status)}
+                    </Badge>
+                  </Link>
                 ))
               ) : (
-                <p className="text-sm text-muted-foreground">Nenhum atendimento programado para hoje.</p>
+                <p className="text-sm text-muted-foreground">Nenhum atendimento futuro na agenda.</p>
               )}
             </CardContent>
           </Card>

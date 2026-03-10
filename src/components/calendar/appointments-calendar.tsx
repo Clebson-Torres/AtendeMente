@@ -104,6 +104,7 @@ export function AppointmentsCalendar({ onSlotSelect }: AppointmentsCalendarProps
       nextDayThreshold="00:00:00"
       plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
       ref={calendarRef}
+      scrollTime="06:00:00"
       select={handleSelect}
       selectable
       selectMirror
@@ -113,7 +114,7 @@ export function AppointmentsCalendar({ onSlotSelect }: AppointmentsCalendarProps
         minute: "2-digit",
         hour12: false,
       }}
-      slotMinTime={isCompact ? "08:00:00" : "07:00:00"}
+      slotMinTime="06:00:00"
       slotMaxTime={isCompact ? "21:00:00" : "22:00:00"}
       titleFormat={{ day: "2-digit", month: "long", year: "numeric" }}
     />

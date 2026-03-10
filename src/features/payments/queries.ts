@@ -2,12 +2,13 @@ import "server-only";
 import { and, desc, eq, gte, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { appointments, patients, payments } from "@/db/schema";
-import type { PaymentMethod, PaymentStatus } from "@/types/domain";
+import type { AppointmentStatus, PaymentMethod, PaymentStatus } from "@/types/domain";
 
 function mapPaymentRow<
   T extends {
     paymentId: string | null;
     appointmentId: string;
+    appointmentStatus: AppointmentStatus;
     status: PaymentStatus | null;
     method: PaymentMethod | null;
     amountReceivedCents: number | null;
@@ -39,7 +40,7 @@ export async function getFinancialSummary(userId: string) {
           Number,
         ),
       pendingCents:
-        sql<number>`coalesce(sum(case when ${payments.id} is null or ${payments.status} = 'pending' then ${appointments.sessionPriceCents} else 0 end), 0)`.mapWith(
+        sql<number>`coalesce(sum(case when ${appointments.status} = 'completed' and (${payments.id} is null or ${payments.status} = 'pending') then ${appointments.sessionPriceCents} else 0 end), 0)`.mapWith(
           Number,
         ),
     })
@@ -66,6 +67,7 @@ export async function listPendingPayments(userId: string) {
     .select({
       paymentId: payments.id,
       appointmentId: appointments.id,
+      appointmentStatus: appointments.status,
       status: payments.status,
       method: payments.method,
       amountReceivedCents: payments.amountReceivedCents,
@@ -81,7 +83,7 @@ export async function listPendingPayments(userId: string) {
       and(
         eq(appointments.userId, userId),
         isNull(appointments.deletedAt),
-        ne(appointments.status, "cancelled"),
+        eq(appointments.status, "completed"),
         or(isNull(payments.id), eq(payments.status, "pending")),
       ),
     )
@@ -95,6 +97,7 @@ export async function listPayments(userId: string) {
     .select({
       paymentId: payments.id,
       appointmentId: appointments.id,
+      appointmentStatus: appointments.status,
       status: payments.status,
       method: payments.method,
       amountReceivedCents: payments.amountReceivedCents,

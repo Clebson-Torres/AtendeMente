@@ -8,6 +8,11 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { createPatientAction, updatePatientAction } from "@/features/patients/actions";
 import { healthHistorySuggestions } from "@/features/patients/constants";
+import {
+  buildHealthHistoryValue,
+  healthHistoryItemsToString,
+  stringToHealthHistoryItems,
+} from "@/features/patients/health-history";
 import { patientFormSchema, type PatientFormInput } from "@/features/patients/schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,34 +27,13 @@ type PatientFormProps = {
   submitLabel?: string;
 };
 
-function stringToItems(value: string) {
-  return value
-    .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function itemsToString(items: string[]) {
-  return items.join("\n");
-}
-
-function buildHealthHistoryValue(items: string[], draftValue: string) {
-  const nextDraft = draftValue.trim();
-
-  if (!nextDraft || items.includes(nextDraft)) {
-    return itemsToString(items);
-  }
-
-  return itemsToString([...items, nextDraft]);
-}
-
 export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar paciente" }: PatientFormProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [birthDateInput, setBirthDateInput] = useState(() => formatDateInputBR(defaultValues?.birthDate));
   const [healthSearch, setHealthSearch] = useState("");
   const [selectedHealthItems, setSelectedHealthItems] = useState<string[]>(() =>
-    stringToItems(defaultValues?.healthHistory ?? ""),
+    stringToHealthHistoryItems(defaultValues?.healthHistory ?? ""),
   );
   const [duplicatePatientId, setDuplicatePatientId] = useState<string | null>(null);
 
@@ -73,9 +57,9 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
   }, [defaultValues?.birthDate, form]);
 
   useEffect(() => {
-    const nextItems = stringToItems(defaultValues?.healthHistory ?? "");
+    const nextItems = stringToHealthHistoryItems(defaultValues?.healthHistory ?? "");
     setSelectedHealthItems(nextItems);
-    form.setValue("healthHistory", itemsToString(nextItems));
+    form.setValue("healthHistory", healthHistoryItemsToString(nextItems));
   }, [defaultValues?.healthHistory, form]);
 
   const filteredSuggestions = useMemo(() => {
@@ -104,14 +88,14 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
 
     const nextItems = [...selectedHealthItems, nextValue];
     setSelectedHealthItems(nextItems);
-    form.setValue("healthHistory", itemsToString(nextItems), { shouldDirty: true, shouldValidate: true });
+    form.setValue("healthHistory", healthHistoryItemsToString(nextItems), { shouldDirty: true, shouldValidate: true });
     setHealthSearch("");
   };
 
   const removeHealthItem = (value: string) => {
     const nextItems = selectedHealthItems.filter((item) => item !== value);
     setSelectedHealthItems(nextItems);
-    form.setValue("healthHistory", itemsToString(nextItems), { shouldDirty: true, shouldValidate: true });
+    form.setValue("healthHistory", healthHistoryItemsToString(nextItems), { shouldDirty: true, shouldValidate: true });
   };
 
   const onSubmit = form.handleSubmit((values) => {

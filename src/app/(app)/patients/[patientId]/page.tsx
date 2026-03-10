@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Download, FileText, MessageCircle, Video } from "lucide-react";
+import { PatientAdminInlineEditor } from "@/components/forms/patient-admin-inline-editor";
 import { AppointmentForm } from "@/components/forms/appointment-form";
-import { PatientForm } from "@/components/forms/patient-form";
 import { EmptyState } from "@/components/shell/empty-state";
 import { PageHeader } from "@/components/shell/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -16,8 +16,6 @@ import {
   buildWhatsAppUrl,
   describeAppointmentTime,
   formatCurrencyBRL,
-  formatDateBR,
-  formatPhone,
   getAppointmentConfirmationBadgeVariant,
   getAppointmentConfirmationLabel,
   getAppointmentStatusBadgeVariant,
@@ -86,25 +84,6 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Telefone</p>
-                  <p className="mt-1 font-medium">{formatPhone(patient.phone)}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Telefone de emergencia</p>
-                  <p className="mt-1 font-medium">{formatPhone(patient.emergencyPhone)}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Nascimento</p>
-                  <p className="mt-1 font-medium">{formatDateBR(patient.birthDate)}</p>
-                </div>
-                <div className="md:col-span-2">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Email</p>
-                  <p className="mt-1 font-medium">{patient.email || "Nao informado"}</p>
-                </div>
-              </div>
-
               <div className="flex flex-wrap gap-3">
                 {whatsappUrl ? (
                   <Button asChild variant="outline">
@@ -122,35 +101,9 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
                 </Button>
               </div>
 
-              <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Historico de saude</p>
-                <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">
-                  {patient.healthHistory || "Sem historico de saude registrado."}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Medicamentos em uso</p>
-                <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">
-                  {patient.medicationsInUse || "Nenhum medicamento informado."}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Observacoes</p>
-                <p className="mt-2 text-sm leading-6 text-slate-700">
-                  {patient.adminNotes || "Sem observacoes administrativas registradas."}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Atualizar ficha</CardTitle>
-              <CardDescription>Edite os dados administrativos sem perder o historico vinculado.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <PatientForm
-                defaultValues={{
+              <PatientAdminInlineEditor
+                patientId={patient.id}
+                values={{
                   adminNotes: patient.adminNotes ?? "",
                   birthDate: patient.birthDate ?? "",
                   email: patient.email ?? "",
@@ -160,31 +113,30 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
                   medicationsInUse: patient.medicationsInUse ?? "",
                   phone: patient.phone ?? "",
                 }}
-                patientId={patient.id}
-                submitLabel="Atualizar ficha"
               />
+
+              <details
+                id="novo-agendamento"
+                className="group rounded-[28px] border border-primary/20 bg-primary/5 p-4 shadow-[0_18px_40px_-28px_rgba(16,89,98,0.55)]"
+              >
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:bg-primary/10">
+                  <span>Novo agendamento para este paciente</span>
+                </summary>
+                <div className="mt-4">
+                  <AppointmentForm
+                    defaultValues={{
+                      patientId: patient.id,
+                      sessionPriceCents: "180,00",
+                      status: "scheduled",
+                      confirmationStatus: "unconfirmed",
+                    }}
+                    patientOptions={[{ id: patient.id, fullName: patient.fullName }]}
+                  />
+                </div>
+              </details>
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Novo agendamento para este paciente</CardTitle>
-              <CardDescription>
-                Crie um atendimento unico ou gere uma serie semanal/quinzenal sem sair da ficha.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <AppointmentForm
-                defaultValues={{
-                  patientId: patient.id,
-                  sessionPriceCents: "180,00",
-                  status: "scheduled",
-                  confirmationStatus: "unconfirmed",
-                }}
-                patientOptions={[{ id: patient.id, fullName: patient.fullName }]}
-              />
-            </CardContent>
-          </Card>
         </div>
 
         <div className="space-y-6">
