@@ -64,9 +64,12 @@ export function FileUploadForm({
       }
 
       const supabase = createBrowserSupabaseClient();
+      const fileBuffer = await file.arrayBuffer();
       const uploadResult = await supabase.storage
         .from(preparePayload.bucket)
-        .uploadToSignedUrl(preparePayload.path, preparePayload.token, file);
+        .uploadToSignedUrl(preparePayload.path, preparePayload.token, fileBuffer, {
+          contentType: file.type,
+        });
 
       if (uploadResult.error) {
         toast.error("Falha ao enviar o arquivo com seguranca.");

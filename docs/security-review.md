@@ -46,6 +46,17 @@ Com a remocao do suporte a `.xls/.xlsx`, o retorno para `CSV` como formato ofici
   - exportacao
   - updates importantes
 
+### Observabilidade
+
+- `request id` propagado por `middleware` via header `x-request-id`.
+- logs estruturados em JSON nas APIs mais sensiveis:
+  - upload
+  - importacao
+  - exportacao
+  - auth
+- endpoint de health disponivel em `/api/health`.
+- endpoint de coleta de violacoes CSP disponivel em `/api/security/csp-report`.
+
 ### Hardening HTTP
 
 - headers configurados:
@@ -56,6 +67,7 @@ Com a remocao do suporte a `.xls/.xlsx`, o retorno para `CSV` como formato ofici
   - `Content-Security-Policy`
 - `unsafe-eval` removido em producao.
 - `object-src 'none'` aplicado.
+- politica `Content-Security-Policy-Report-Only` mais estrita adicionada para medir o caminho de remocao de `unsafe-inline`.
 
 ### Rate limiting
 
@@ -85,7 +97,7 @@ Com a remocao do suporte a `.xls/.xlsx`, o retorno para `CSV` como formato ofici
 #### 2. CSP ainda pode ser refinada
 
 - Evidencia:
-  - `unsafe-eval` saiu de producao, mas `unsafe-inline` ainda permanece por compatibilidade com o app atual.
+  - `unsafe-eval` saiu de producao, `unsafe-inline` ainda permanece na politica aplicada por compatibilidade, e uma politica `report-only` mais estrita foi adicionada para gerar evidencias reais antes da remocao completa.
 - Impacto:
   - baseline melhor, mas ainda existe margem para endurecimento adicional.
 - Tipo:
@@ -150,6 +162,7 @@ Com a remocao do suporte a `.xls/.xlsx`, o retorno para `CSV` como formato ofici
 - Exportacao de paciente respeita autorizacao e gera auditoria.
 - Onboarding por convite reduz exposicao operacional em comparacao com signup publico.
 - O build de release passa com limpeza de artefatos do Next antes da geracao da versao final.
+- O app agora conta com trilha de request id e logs estruturados para investigacao de falhas operacionais.
 
 ## Recomendacoes priorizadas
 

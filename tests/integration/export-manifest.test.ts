@@ -10,6 +10,7 @@ describe("export manifest", () => {
       {
         id: "patient-1",
         fullName: "Marina Alves",
+        chartNumber: "PR-0001",
       },
       [
         {
@@ -39,7 +40,7 @@ describe("export manifest", () => {
       ],
     );
 
-    expect(manifest.patient).toMatchObject({ id: "patient-1" });
+    expect(manifest.patient).toMatchObject({ id: "patient-1", chartNumber: "PR-0001" });
     expect(manifest.appointments).toHaveLength(1);
     expect(manifest.appointments[0]?.payment.status).toBe("paid");
     expect(manifest.appointments[0]?.files[0]?.originalName).toBe("nota.pdf");

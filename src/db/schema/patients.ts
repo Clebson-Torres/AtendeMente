@@ -11,6 +11,7 @@ export const patients = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     fullName: text("full_name").notNull(),
+    chartNumber: text("chart_number"),
     phone: text("phone"),
     email: text("email"),
     birthDate: date("birth_date"),
@@ -25,6 +26,7 @@ export const patients = pgTable(
   },
   (table) => ({
     userIdx: index("patients_user_idx").on(table.userId),
+    chartNumberIdx: index("patients_chart_number_idx").on(table.chartNumber),
     statusIdx: index("patients_status_idx").on(table.status),
     deletedIdx: index("patients_deleted_idx").on(table.deletedAt),
   }),

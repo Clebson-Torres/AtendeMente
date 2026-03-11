@@ -7,20 +7,30 @@ import { decryptRecordContent } from "@/lib/crypto/records";
 import { AppError } from "@/lib/errors/app-error";
 
 function isMissingPatientProfileColumnError(error: unknown) {
+  const candidate =
+    typeof error === "object" && error !== null && "cause" in error
+      ? error.cause
+      : error;
+
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "42703"
+    typeof candidate === "object" &&
+    candidate !== null &&
+    "code" in candidate &&
+    candidate.code === "42703"
   );
 }
 
 function isMissingRecurringSchemaError(error: unknown) {
+  const candidate =
+    typeof error === "object" && error !== null && "cause" in error
+      ? error.cause
+      : error;
+
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "42703" || error.code === "42P01")
+    typeof candidate === "object" &&
+    candidate !== null &&
+    "code" in candidate &&
+    (candidate.code === "42703" || candidate.code === "42P01")
   );
 }
 
@@ -48,6 +58,7 @@ export async function listPatients(userId: string, search = "") {
       .select({
         id: patients.id,
         fullName: patients.fullName,
+        chartNumber: patients.chartNumber,
         phone: patients.phone,
         emergencyPhone: patients.emergencyPhone,
         email: patients.email,
@@ -67,6 +78,7 @@ export async function listPatients(userId: string, search = "") {
       .select({
         id: patients.id,
         fullName: patients.fullName,
+        chartNumber: sql<string | null>`null`,
         phone: patients.phone,
         email: patients.email,
         birthDate: patients.birthDate,
@@ -91,6 +103,7 @@ export async function getPatientDetail(userId: string, patientId: string) {
         id: string;
         userId: string;
         fullName: string;
+        chartNumber: string | null;
         phone: string | null;
         email: string | null;
         birthDate: string | null;
@@ -111,6 +124,7 @@ export async function getPatientDetail(userId: string, patientId: string) {
         id: patients.id,
         userId: patients.userId,
         fullName: patients.fullName,
+        chartNumber: patients.chartNumber,
         phone: patients.phone,
         email: patients.email,
         birthDate: patients.birthDate,
@@ -136,6 +150,7 @@ export async function getPatientDetail(userId: string, patientId: string) {
         id: patients.id,
         userId: patients.userId,
         fullName: patients.fullName,
+        chartNumber: sql<string | null>`null`,
         phone: patients.phone,
         email: patients.email,
         birthDate: patients.birthDate,

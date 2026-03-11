@@ -23,7 +23,9 @@ Nenhuma publicacao deve seguir com `lint`, `test`, `build` ou `test:e2e` falhand
 - Validar reset de senha real por email.
 - Validar upload e download de anexo.
 - Validar exportacao ZIP de paciente.
+- Confirmar `GET /api/health` respondendo `200`.
 - Revisar logs recentes na Vercel e no Supabase.
+- Revisar logs estruturados por `x-request-id` nas APIs sensiveis.
 - Revisar logs de auditoria para login, exportacao e download.
 
 ## Backup e restauracao

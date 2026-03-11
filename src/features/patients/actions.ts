@@ -34,6 +34,35 @@ async function findDuplicatePatient(userId: string, fullName: string, phone?: st
   return candidatePatients.find((patient) => buildPatientIdentityKey(patient) === inputKey) ?? null;
 }
 
+async function findDuplicateChartNumber(userId: string, chartNumber?: string | null, patientId?: string) {
+  const normalizedChartNumber = chartNumber?.trim();
+
+  if (!normalizedChartNumber) {
+    return null;
+  }
+
+  const filters = [
+    eq(patients.userId, userId),
+    eq(patients.chartNumber, normalizedChartNumber),
+    isNull(patients.deletedAt),
+  ];
+
+  if (patientId) {
+    filters.push(ne(patients.id, patientId));
+  }
+
+  const [duplicate] = await getDb()
+    .select({
+      id: patients.id,
+      chartNumber: patients.chartNumber,
+    })
+    .from(patients)
+    .where(and(...filters))
+    .limit(1);
+
+  return duplicate ?? null;
+}
+
 export async function createPatientAction(
   input: unknown,
 ): Promise<ActionResponse<{ patientId: string; duplicatePatientId?: string }>> {
@@ -58,11 +87,22 @@ export async function createPatientAction(
     };
   }
 
+  const duplicateChartNumber = await findDuplicateChartNumber(user.id, parsed.data.chartNumber);
+
+  if (duplicateChartNumber) {
+    return {
+      success: false,
+      message: "Ja existe um paciente com este numero do prontuario na sua base.",
+      data: { patientId: duplicateChartNumber.id, duplicatePatientId: duplicateChartNumber.id },
+    };
+  }
+
   const [patient] = await getDb()
     .insert(patients)
     .values({
       userId: user.id,
       fullName: parsed.data.fullName,
+      chartNumber: parsed.data.chartNumber?.trim() || null,
       phone: parsed.data.phone || null,
       email: parsed.data.email || null,
       birthDate: parsed.data.birthDate || null,
@@ -116,10 +156,21 @@ export async function updatePatientAction(
     };
   }
 
+  const duplicateChartNumber = await findDuplicateChartNumber(user.id, parsed.data.chartNumber, patientId);
+
+  if (duplicateChartNumber) {
+    return {
+      success: false,
+      message: "Ja existe um paciente com este numero do prontuario na sua base.",
+      data: { patientId: duplicateChartNumber.id, duplicatePatientId: duplicateChartNumber.id },
+    };
+  }
+
   const [patient] = await getDb()
     .update(patients)
     .set({
       fullName: parsed.data.fullName,
+      chartNumber: parsed.data.chartNumber?.trim() || null,
       phone: parsed.data.phone || null,
       email: parsed.data.email || null,
       birthDate: parsed.data.birthDate || null,

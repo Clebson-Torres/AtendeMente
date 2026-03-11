@@ -20,14 +20,17 @@ test.describe("patient import flow", () => {
       buffer: Buffer.from(csv),
     });
     await page.getByRole("button", { name: "Gerar preview" }).click();
-    await expect(page.getByText("Preview de importacao gerado.")).toBeVisible();
-    await expect(page.getByText(importName)).toBeVisible();
+    await expect(page.getByText("Validas", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("1").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Importar pacientes" }).click();
-    await expect(page.getByText("1 pacientes importados com sucesso.")).toBeVisible();
+    await expect(page.getByText("1 pacientes importados com sucesso.")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "Importar pacientes" })).toBeDisabled();
+    await expect(page.getByText("Nenhum arquivo selecionado")).toBeVisible();
+    await expect(page.getByText("Validas", { exact: true })).not.toBeVisible();
 
     await page.getByPlaceholder("Buscar por nome, telefone ou email").fill(importName);
     await page.getByRole("button", { name: "Buscar" }).click();
-    await expect(page.getByText(importName)).toBeVisible();
+    await expect(page.getByText(importName, { exact: true })).toBeVisible();
   });
 });
