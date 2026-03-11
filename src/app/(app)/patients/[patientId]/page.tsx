@@ -69,6 +69,17 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
         }
       />
 
+      <div className="flex flex-wrap gap-2">
+        {patient.chartNumber ? (
+          <Badge className="rounded-full px-4 py-1 text-xs uppercase tracking-[0.16em]" variant="outline">
+            Prontuario: {patient.chartNumber}
+          </Badge>
+        ) : null}
+        <Badge className="rounded-full px-4 py-1 text-xs uppercase tracking-[0.16em]" variant={patient.status === "active" ? "success" : "secondary"}>
+          {getPatientStatusLabel(patient.status)}
+        </Badge>
+      </div>
+
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.2fr]">
         <div className="space-y-6">
           <Card>
@@ -106,6 +117,7 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
                 values={{
                   adminNotes: patient.adminNotes ?? "",
                   birthDate: patient.birthDate ?? "",
+                  chartNumber: patient.chartNumber ?? "",
                   email: patient.email ?? "",
                   emergencyPhone: patient.emergencyPhone ?? "",
                   fullName: patient.fullName,

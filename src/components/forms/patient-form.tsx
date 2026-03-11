@@ -36,11 +36,13 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
     stringToHealthHistoryItems(defaultValues?.healthHistory ?? ""),
   );
   const [duplicatePatientId, setDuplicatePatientId] = useState<string | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
 
   const form = useForm<PatientFormInput>({
     resolver: zodResolver(patientFormSchema),
     defaultValues: {
       fullName: defaultValues?.fullName ?? "",
+      chartNumber: defaultValues?.chartNumber ?? "",
       phone: defaultValues?.phone ?? "",
       email: defaultValues?.email ?? "",
       birthDate: defaultValues?.birthDate ?? "",
@@ -101,6 +103,7 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
   const onSubmit = form.handleSubmit((values) => {
     startTransition(async () => {
       setDuplicatePatientId(null);
+      setDuplicateWarning(null);
       const payload = {
         ...values,
         healthHistory: buildHealthHistoryValue(selectedHealthItems, healthSearch),
@@ -109,6 +112,7 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
 
       if (!result.success) {
         setDuplicatePatientId(result.data?.duplicatePatientId ?? null);
+        setDuplicateWarning(result.data?.duplicatePatientId ? result.message : null);
         toast.error(result.message);
         return;
       }
@@ -133,6 +137,12 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
           <Label htmlFor="fullName">Nome completo</Label>
           <Input id="fullName" {...form.register("fullName")} />
           <FieldError message={form.formState.errors.fullName?.message} />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="chartNumber">Numero do prontuario</Label>
+          <Input id="chartNumber" placeholder="Ex.: PR-2026-001" {...form.register("chartNumber")} />
+          <FieldError message={form.formState.errors.chartNumber?.message} />
         </div>
 
         <div className="space-y-2">
@@ -172,7 +182,7 @@ export function PatientForm({ patientId, defaultValues, submitLabel = "Salvar pa
 
       {duplicatePatientId ? (
         <div className="rounded-3xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-          Ja existe um paciente com este nome e telefone.
+          {duplicateWarning ?? "Ja existe um paciente com este nome e telefone."}
           {" "}
           <Link className="font-semibold underline" href={`/patients/${duplicatePatientId}`}>
             Abrir ficha existente

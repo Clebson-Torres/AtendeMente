@@ -4,7 +4,7 @@ import path from "node:path";
 import { and, eq, isNull } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { appointments, payments, recordFiles } from "@/db/schema";
-import { allowedFileExtensions, allowedMimeTypes } from "@/features/files/schemas";
+import { allowedFileExtensions, allowedMimeTypes, isAllowedMimeTypeForFile } from "@/features/files/schemas";
 import { writeAuditLog } from "@/lib/audit/log";
 import { getStorageBucket } from "@/lib/env";
 import { AppError } from "@/lib/errors/app-error";
@@ -21,7 +21,17 @@ function getNormalizedExtension(fileName: string) {
 }
 
 function getStoredMimeType(fileInfo: { content_type?: string | null; metadata?: { mimetype?: string | null } | null }) {
-  return fileInfo.content_type ?? fileInfo.metadata?.mimetype ?? "";
+  return (fileInfo.content_type ?? fileInfo.metadata?.mimetype ?? "").trim().toLowerCase();
+}
+
+function getStoredByteSize(fileInfo: { size?: number | string | null; metadata?: { size?: number | string | null } | null }) {
+  const rawSize = fileInfo.size ?? fileInfo.metadata?.size ?? 0;
+  const normalizedSize = typeof rawSize === "number" ? rawSize : Number(rawSize);
+  return Number.isFinite(normalizedSize) ? normalizedSize : 0;
+}
+
+function isMissingOrGenericStoredMimeType(mimeType: string) {
+  return mimeType === "" || mimeType === "application/octet-stream" || mimeType === "binary/octet-stream";
 }
 
 async function rejectUploadedFile(fileId: string, storagePath: string) {
@@ -153,14 +163,18 @@ export async function confirmUpload(userId: string, fileId: string) {
   }
 
   const storedMimeType = getStoredMimeType(uploadedFile);
-  const storedSize = uploadedFile.size ?? uploadedFile.metadata?.size ?? 0;
+  const storedSize = getStoredByteSize(uploadedFile);
   const hasAllowedExtension = allowedFileExtensions.includes(
     getNormalizedExtension(file.originalName) as (typeof allowedFileExtensions)[number],
   );
-  const hasAllowedMimeType = allowedMimeTypes.includes(
-    storedMimeType as (typeof allowedMimeTypes)[number],
-  );
-  const matchesExpectedFile = storedMimeType === file.mimeType && storedSize === file.byteSize;
+  const normalizedExpectedMimeType = file.mimeType.trim().toLowerCase();
+  const hasAllowedMimeType =
+    isMissingOrGenericStoredMimeType(storedMimeType) ||
+    allowedMimeTypes.includes(storedMimeType as (typeof allowedMimeTypes)[number]);
+  const matchesExpectedFile =
+    storedSize === file.byteSize &&
+    isAllowedMimeTypeForFile(file.originalName, normalizedExpectedMimeType) &&
+    (isMissingOrGenericStoredMimeType(storedMimeType) || isAllowedMimeTypeForFile(file.originalName, storedMimeType));
 
   if (!hasAllowedExtension || !hasAllowedMimeType || !matchesExpectedFile) {
     await rejectUploadedFile(file.id, file.storagePath);

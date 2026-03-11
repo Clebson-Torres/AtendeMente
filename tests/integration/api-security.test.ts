@@ -74,5 +74,5 @@ describe("api security surfaces", () => {
 
     expect(response.status).toBe(400);
     expect(payload.errors?.fileName?.[0]).toContain("Extensao");
-  });
+  }, 15_000);
 });

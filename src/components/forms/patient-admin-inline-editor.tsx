@@ -16,6 +16,7 @@ import { formatDateBR, formatPhone, maskDateInputBR, parseDateInputBR } from "@/
 
 type PatientAdminValues = {
   fullName: string;
+  chartNumber: string;
   phone: string;
   emergencyPhone: string;
   birthDate: string;
@@ -44,6 +45,12 @@ type FieldConfig = {
 
 const fieldConfigs: FieldConfig[] = [
   { key: "fullName", label: "Nome completo", emptyText: "Nao informado", fullWidth: true },
+  {
+    key: "chartNumber",
+    label: "Numero do prontuario",
+    placeholder: "Ex.: PR-2026-001",
+    emptyText: "Nao informado",
+  },
   { key: "phone", label: "Telefone", placeholder: "(11) 99999-9999", emptyText: "Nao informado", formatDisplay: formatPhone },
   {
     key: "emergencyPhone",

@@ -9,7 +9,35 @@ export const allowedMimeTypes = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "image/png",
   "image/jpeg",
+  "image/jpg",
 ] as const;
+
+export const allowedMimeTypesByExtension = {
+  ".pdf": ["application/pdf"],
+  ".doc": ["application/msword"],
+  ".docx": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ".png": ["image/png"],
+  ".jpg": ["image/jpeg", "image/jpg"],
+  ".jpeg": ["image/jpeg", "image/jpg"],
+} as const;
+
+export function getFileExtension(fileName: string) {
+  const normalizedName = fileName.trim().toLowerCase();
+  const matchedExtension = allowedFileExtensions.find((extension) => normalizedName.endsWith(extension));
+  return matchedExtension ?? null;
+}
+
+export function isAllowedMimeTypeForFile(fileName: string, mimeType: string) {
+  const extension = getFileExtension(fileName);
+
+  if (!extension) {
+    return false;
+  }
+
+  const normalizedMimeType = mimeType.trim().toLowerCase();
+  const allowedMimeTypesForExtension = allowedMimeTypesByExtension[extension] as readonly string[];
+  return allowedMimeTypesForExtension.includes(normalizedMimeType);
+}
 
 export const fileUploadRequestSchema = z.object({
   appointmentId: z.uuid("Atendimento invalido."),
@@ -20,14 +48,21 @@ export const fileUploadRequestSchema = z.object({
   fileSize: z.number().int().positive().max(10 * 1024 * 1024, "Arquivo acima de 10 MB."),
   mimeType: z.enum(allowedMimeTypes, "Formato de arquivo nao permitido."),
 }).superRefine((value, ctx) => {
-  const normalizedName = value.fileName.toLowerCase();
-  const hasAllowedExtension = allowedFileExtensions.some((extension) => normalizedName.endsWith(extension));
+  const hasAllowedExtension = Boolean(getFileExtension(value.fileName));
 
   if (!hasAllowedExtension) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "Extensao de arquivo nao permitida.",
       path: ["fileName"],
+    });
+  }
+
+  if (!isAllowedMimeTypeForFile(value.fileName, value.mimeType)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "O tipo do arquivo nao corresponde a extensao informada.",
+      path: ["mimeType"],
     });
   }
 
