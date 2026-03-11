@@ -6,6 +6,7 @@ import { writeAuditLog } from "@/lib/audit/log";
 import { getCurrentUser } from "@/lib/auth/session";
 import { getOptionalEnv } from "@/lib/env";
 import { AppError } from "@/lib/errors/app-error";
+import { logError, logInfo, logWarn } from "@/lib/observability/logger";
 import { enforceRateLimit } from "@/lib/security/rate-limit";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { forgotPasswordSchema, loginSchema } from "@/features/auth/schemas";
@@ -37,6 +38,9 @@ export async function signInAction(
     const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
 
     if (error || !data.user) {
+      logWarn("auth.sign_in.invalid_credentials", {
+        email: parsed.data.email.toLowerCase(),
+      });
       return {
         success: false,
         message: "Nao foi possivel entrar. Confira email e senha.",
@@ -50,6 +54,10 @@ export async function signInAction(
       entityId: data.user.id,
     });
 
+    logInfo("auth.sign_in.success", {
+      userId: data.user.id,
+    });
+
     return {
       success: true,
       message: "Login realizado com sucesso.",
@@ -57,12 +65,17 @@ export async function signInAction(
     };
   } catch (error) {
     if (error instanceof AppError) {
+      logWarn("auth.sign_in.app_error", {
+        statusCode: error.statusCode,
+        errorCode: error.code,
+      });
       return {
         success: false,
         message: error.message,
       };
     }
 
+    logError("auth.sign_in.failed", error);
     return {
       success: false,
       message: "Nao foi possivel entrar agora. Tente novamente em instantes.",
@@ -95,18 +108,27 @@ export async function sendPasswordResetAction(input: unknown): Promise<ActionRes
       redirectTo: `${appUrl}/reset-password`,
     });
 
+    logInfo("auth.password_reset.requested", {
+      email: parsed.data.email.toLowerCase(),
+    });
+
     return {
       success: true,
       message: "Se o email existir, enviaremos um link para redefinir a senha.",
     };
   } catch (error) {
     if (error instanceof AppError) {
+      logWarn("auth.password_reset.app_error", {
+        statusCode: error.statusCode,
+        errorCode: error.code,
+      });
       return {
         success: false,
         message: error.message,
       };
     }
 
+    logError("auth.password_reset.failed", error);
     return {
       success: false,
       message: "Nao foi possivel solicitar a redefinicao agora.",
@@ -144,11 +166,18 @@ export async function sendInviteAction(
     });
 
     if (error) {
+      logWarn("auth.invite.failed", {
+        email,
+      });
       return {
         success: false,
         message: "Nao foi possivel enviar o convite agora.",
       };
     }
+
+    logInfo("auth.invite.sent", {
+      email,
+    });
 
     return {
       success: true,
@@ -156,12 +185,17 @@ export async function sendInviteAction(
     };
   } catch (error) {
     if (error instanceof AppError) {
+      logWarn("auth.invite.app_error", {
+        statusCode: error.statusCode,
+        errorCode: error.code,
+      });
       return {
         success: false,
         message: error.message,
       };
     }
 
+    logError("auth.invite.failed_unexpected", error);
     return {
       success: false,
       message: "Nao foi possivel enviar o convite agora.",
