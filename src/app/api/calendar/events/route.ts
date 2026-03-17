@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     events: events.map((event) => ({
       id: event.id,
+      patientId: event.patientId,
       title: event.title,
       start: event.start,
       end: event.end,

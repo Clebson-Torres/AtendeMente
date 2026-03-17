@@ -11,18 +11,11 @@ import { cancelRecurringSeriesAction } from "@/features/appointments/actions";
 import { deactivatePatientAction, reactivatePatientAction } from "@/features/patients/actions";
 import { getPatientDetail } from "@/features/patients/queries";
 import { requireUser } from "@/lib/auth/session";
+import { PatientTimelineClient } from "./_components/patient-timeline-client";
 import {
   buildGoogleMeetUrl,
   buildWhatsAppUrl,
-  describeAppointmentTime,
-  formatCurrencyBRL,
-  getAppointmentConfirmationBadgeVariant,
-  getAppointmentConfirmationLabel,
-  getAppointmentStatusBadgeVariant,
-  getAppointmentStatusLabel,
   getPatientStatusLabel,
-  getPaymentStatusLabel,
-  getRecordFileKindLabel,
 } from "@/lib/utils";
 
 type PatientDetailPageProps = {
@@ -195,70 +188,7 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
               <CardDescription>Resumo textual rapido, status financeiro e anexos por atendimento.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {timeline.length ? (
-                timeline.map((item) => (
-                  <div key={item.appointmentId} className="rounded-[28px] border border-border/80 bg-white p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-1">
-                        <Link className="text-lg font-semibold text-slate-900" href={`/appointments/${item.appointmentId}`}>
-                          {describeAppointmentTime(item.startsAt)}
-                        </Link>
-                        <div className="flex flex-wrap gap-2">
-                          <Badge variant={getAppointmentStatusBadgeVariant(item.status)}>
-                            {getAppointmentStatusLabel(item.status)}
-                          </Badge>
-                          <Badge variant={getAppointmentConfirmationBadgeVariant(item.confirmationStatus)}>
-                            {getAppointmentConfirmationLabel(item.confirmationStatus)}
-                          </Badge>
-                          <Badge variant={item.paymentStatus === "paid" ? "success" : item.paymentStatus === "pending" ? "warning" : "secondary"}>
-                            {item.paymentStatus ? getPaymentStatusLabel(item.paymentStatus) : "Sem pagamento"}
-                          </Badge>
-                          {item.seriesId ? <Badge variant="outline">Serie recorrente</Badge> : null}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Valor</p>
-                        <p className="font-semibold">{formatCurrencyBRL(item.sessionPriceCents)}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_260px]">
-                      <div className="rounded-3xl bg-muted/35 p-4 text-sm leading-6 text-slate-700">
-                        {item.summary || "Sem registro textual para este atendimento ainda."}
-                      </div>
-                      <div className="rounded-3xl bg-muted/35 p-4">
-                        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                          Anexos
-                        </p>
-                        <div className="space-y-2">
-                          {item.files.length ? (
-                            item.files.map((file) => (
-                              <a
-                                key={file.id}
-                                className="flex items-center gap-2 text-sm font-medium text-primary"
-                                href={`/api/files/${file.id}/download`}
-                              >
-                                <FileText className="h-4 w-4" />
-                                {file.originalName}
-                                <span className="text-xs font-normal text-muted-foreground">
-                                  ({getRecordFileKindLabel(file.kind)})
-                                </span>
-                              </a>
-                            ))
-                          ) : (
-                            <p className="text-sm text-muted-foreground">Nenhum anexo vinculado.</p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <EmptyState
-                  title="Sem atendimentos registrados"
-                  description="Assim que os atendimentos forem criados, a linha do tempo completa aparecera aqui."
-                />
-              )}
+              <PatientTimelineClient patientId={patient.id} timeline={timeline} />
             </CardContent>
           </Card>
         </div>

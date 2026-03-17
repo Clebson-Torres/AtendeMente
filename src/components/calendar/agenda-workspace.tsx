@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AppointmentsCalendar } from "@/components/calendar/appointments-calendar";
 import { AppointmentForm } from "@/components/forms/appointment-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +18,7 @@ function plusOneHour(dateString: string) {
 
 export function AgendaWorkspace({ patientOptions }: AgendaWorkspaceProps) {
   const [selectedSlot, setSelectedSlot] = useState<{ startsAt: string; endsAt: string } | null>(null);
+  const refetchCalendarRef = useRef<(() => void) | null>(null);
 
   const defaultValues = useMemo(
     () => ({
@@ -42,6 +43,7 @@ export function AgendaWorkspace({ patientOptions }: AgendaWorkspaceProps) {
         </CardHeader>
         <CardContent>
           <AppointmentsCalendar
+            onRefetch={(fn) => { refetchCalendarRef.current = fn; }}
             onSlotSelect={(slot) =>
               setSelectedSlot({
                 startsAt: toDateTimeLocalValue(slot.start),
@@ -65,7 +67,7 @@ export function AgendaWorkspace({ patientOptions }: AgendaWorkspaceProps) {
         </CardHeader>
         <CardContent>
           <AppointmentForm
-            afterSuccess={() => setSelectedSlot(null)}
+            afterSuccess={() => { setSelectedSlot(null); refetchCalendarRef.current?.(); }}
             defaultValues={defaultValues}
             patientOptions={patientOptions}
           />

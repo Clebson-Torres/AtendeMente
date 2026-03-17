@@ -19,6 +19,7 @@ export async function listCalendarEvents(userId: string, start: Date, end: Date)
   return getDb()
     .select({
       id: appointments.id,
+      patientId: appointments.patientId,
       title: patients.fullName,
       start: appointments.startsAt,
       end: appointments.endsAt,

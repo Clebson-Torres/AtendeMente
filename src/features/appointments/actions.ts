@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, gte, isNull, lt, ne } from "drizzle-orm";
+import { and, eq, gte, gt, isNull, lt, ne } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { getDb } from "@/db/client";
 import { appointments, recurringSeries } from "@/db/schema";
@@ -61,6 +61,27 @@ export async function createAppointmentAction(
   const endsAt = new Date(parsed.data.endsAt);
   const db = getDb();
   const isRecurring = Boolean(parsed.data.recurrenceFrequency);
+
+  // Verificacao de conflito de agenda na hora exata
+  const overlappingAppointment = await db.query.appointments.findFirst({
+    where: and(
+      eq(appointments.userId, user.id),
+      isNull(appointments.deletedAt),
+      ne(appointments.status, "cancelled"),
+      lt(appointments.startsAt, endsAt),
+      gt(appointments.endsAt, startsAt), // Changed from gte to gt so edge-to-edge schedules are permitted
+    ),
+    columns: {
+      id: true,
+    },
+  });
+
+  if (overlappingAppointment) {
+    return {
+      success: false,
+      message: "Ja existe um agendamento para este horario.",
+    };
+  }
 
   if (!isRecurring) {
     const duplicate = await findDuplicateAppointment(user.id, parsed.data.patientId, startsAt);
@@ -200,14 +221,39 @@ export async function updateAppointmentAction(
   }
 
   const startsAt = new Date(parsed.data.startsAt);
+  const endsAt = new Date(parsed.data.endsAt);
+
   const duplicate = await findDuplicateAppointment(user.id, parsed.data.patientId, startsAt, appointmentId);
 
-  const [appointment] = await getDb()
+  // Verificacao de conflito de agenda na hora exata
+  const db = getDb();
+  const overlappingAppointment = await db.query.appointments.findFirst({
+    where: and(
+      eq(appointments.userId, user.id),
+      isNull(appointments.deletedAt),
+      ne(appointments.status, "cancelled"),
+      ne(appointments.id, appointmentId), // ignorar este que está sendo editado
+      lt(appointments.startsAt, endsAt),
+      gt(appointments.endsAt, startsAt), // Changed from gte to gt so edge-to-edge schedules are permitted
+    ),
+    columns: {
+      id: true,
+    },
+  });
+
+  if (overlappingAppointment) {
+    return {
+      success: false,
+      message: "Ja existe um agendamento para este horario.",
+    };
+  }
+
+  const [appointment] = await db
     .update(appointments)
     .set({
       patientId: parsed.data.patientId,
       startsAt,
-      endsAt: new Date(parsed.data.endsAt),
+      endsAt,
       status: parsed.data.status,
       confirmationStatus: parsed.data.confirmationStatus,
       sessionPriceCents: parsed.data.sessionPriceCents,
