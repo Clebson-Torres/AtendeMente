@@ -1,8 +1,6 @@
-import Link from "next/link";
-import { Download, FileText, MessageCircle, Video } from "lucide-react";
+import { Download, MessageCircle, Video } from "lucide-react";
 import { PatientAdminInlineEditor } from "@/components/forms/patient-admin-inline-editor";
 import { AppointmentForm } from "@/components/forms/appointment-form";
-import { EmptyState } from "@/components/shell/empty-state";
 import { PageHeader } from "@/components/shell/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

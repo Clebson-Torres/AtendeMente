@@ -17,6 +17,7 @@ import {
   getPaymentStatusLabel,
   getRecordFileKindLabel,
 } from "@/lib/utils";
+import { type RecordFileKind } from "@/types/domain";
 
 type TimelineItem = {
   appointmentId: string;
@@ -35,7 +36,7 @@ type TimelineItem = {
   files: Array<{
     id: string;
     originalName: string;
-    kind: string;
+    kind: RecordFileKind;
   }>;
 };
 
@@ -133,7 +134,7 @@ export function PatientTimelineClient({ patientId, timeline }: PatientTimelineCl
                       <FileText className="h-4 w-4" />
                       {file.originalName}
                       <span className="text-xs font-normal text-muted-foreground">
-                        ({getRecordFileKindLabel(file.kind as any)})
+                        ({getRecordFileKindLabel(file.kind)})
                       </span>
                     </a>
                   ))
