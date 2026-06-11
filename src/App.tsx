@@ -1,0 +1,69 @@
+import { useState, useEffect, createContext, useContext } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { onAuthChange } from "./lib/auth";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import Patients from "./pages/Patients";
+import Appointments from "./pages/Appointments";
+import AppointmentDetail from "./pages/AppointmentDetail";
+import Payments from "./pages/Payments";
+import Layout from "./components/Layout";
+import ToastContainer from "./components/ui/Toast";
+
+export interface AuthUser {
+  uid: string;
+  email: string | null;
+}
+
+interface AuthCtx {
+  user: AuthUser | null;
+  loading: boolean;
+}
+
+const AuthContext = createContext<AuthCtx>({ user: null, loading: true });
+export const useAuth = () => useContext(AuthContext);
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="flex h-screen items-center justify-center text-gray-500">Carregando...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+export default function App() {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const unsub = onAuthChange((u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  return (
+    <AuthContext.Provider value={{ user, loading }}>
+      <ToastContainer />
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route
+          path="/*"
+          element={
+            <ProtectedRoute>
+              <Layout>
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/patients" element={<Patients />} />
+                  <Route path="/appointments" element={<Appointments />} />
+                  <Route path="/appointments/:id" element={<AppointmentDetail />} />
+                  <Route path="/payments" element={<Payments />} />
+                </Routes>
+              </Layout>
+            </ProtectedRoute>
+          }
+        />
+      </Routes>
+    </AuthContext.Provider>
+  );
+}

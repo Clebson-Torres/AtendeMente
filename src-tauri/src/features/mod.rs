@@ -1,0 +1,9 @@
+pub mod appointments;
+pub mod appointments_recurrence;
+pub mod auth;
+pub mod dashboard;
+pub mod exports;
+pub mod files;
+pub mod patients;
+pub mod payments;
+pub mod records;
