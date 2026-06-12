@@ -1,7 +1,8 @@
 import { useState, useEffect, createContext, useContext } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { onAuthChange } from "./lib/auth";
+import { onAuthChange, restoreSession } from "./lib/auth";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Patients from "./pages/Patients";
 import Appointments from "./pages/Appointments";
@@ -35,11 +36,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthChange((u) => {
-      setUser(u);
-      setLoading(false);
+    let unsub: (() => void) | null = null;
+    restoreSession().finally(() => {
+      unsub = onAuthChange((u) => {
+        setUser(u);
+        setLoading(false);
+      });
     });
-    return unsub;
+    return () => { if (unsub) unsub(); };
   }, []);
 
   return (
@@ -47,6 +51,7 @@ export default function App() {
       <ToastContainer />
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
         <Route
           path="/*"
           element={

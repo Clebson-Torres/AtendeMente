@@ -1,3 +1,51 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap");
+
+@layer base {
+  :root {
+    --background: 40 17% 97%;
+    --foreground: 205 24% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 205 24% 15%;
+    --primary: 184 56% 28%;
+    --primary-foreground: 180 20% 96%;
+    --secondary: 35 38% 91%;
+    --secondary-foreground: 205 24% 18%;
+    --muted: 40 20% 94%;
+    --muted-foreground: 210 12% 38%;
+    --accent: 194 40% 88%;
+    --accent-foreground: 199 72% 20%;
+    --destructive: 0 74% 52%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 157 53% 36%;
+    --success-foreground: 0 0% 100%;
+    --border: 28 16% 84%;
+    --input: 28 16% 84%;
+    --ring: 184 56% 28%;
+    --radius: 1.25rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground;
+    background-image:
+      radial-gradient(circle at top left, rgba(14, 116, 144, 0.08), transparent 32%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(244, 242, 238, 0.98));
+  }
+
+  h1, h2, h3, h4 {
+    @apply tracking-tight text-slate-900;
+  }
+}
+
+@layer components {
+  .app-surface {
+    @apply rounded-[28px] border border-white/80 bg-white/90 shadow-soft backdrop-blur;
+  }
+}

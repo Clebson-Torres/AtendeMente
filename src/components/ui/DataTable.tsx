@@ -1,3 +1,4 @@
+import { cn } from "../../lib/utils";
 import type { ReactNode } from "react";
 
 export interface Column<T> {
@@ -18,7 +19,7 @@ interface Props<T> {
 export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, emptyMessage }: Props<T>) {
   if (data.length === 0) {
     return (
-      <div className="text-center py-12 text-gray-400 text-sm">
+      <div className="text-center py-12 text-muted-foreground text-sm">
         {emptyMessage || "Nenhum registro encontrado."}
       </div>
     );
@@ -28,9 +29,9 @@ export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, 
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-gray-200">
+          <tr className="border-b border-border">
             {columns.map((col) => (
-              <th key={col.key} className={`text-left px-3 py-3 font-medium text-gray-500 ${col.className || ""}`}>
+              <th key={col.key} className={cn("text-left px-4 py-3 font-medium text-muted-foreground", col.className)}>
                 {col.header}
               </th>
             ))}
@@ -41,10 +42,13 @@ export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, 
             <tr
               key={keyExtractor(item)}
               onClick={() => onRowClick?.(item)}
-              className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${onRowClick ? "cursor-pointer" : ""}`}
+              className={cn(
+                "border-b border-border/50 transition-colors",
+                onRowClick ? "cursor-pointer hover:bg-muted/50" : "",
+              )}
             >
               {columns.map((col) => (
-                <td key={col.key} className={`px-3 py-3 text-gray-700 ${col.className || ""}`}>
+                <td key={col.key} className={cn("px-4 py-3 text-foreground", col.className)}>
                   {col.render ? col.render(item) : (item as any)[col.key] ?? "-"}
                 </td>
               ))}

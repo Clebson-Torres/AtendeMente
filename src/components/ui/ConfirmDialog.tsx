@@ -15,12 +15,12 @@ interface Props {
 
 export default function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmLabel = "Confirmar", loading, children }: Props) {
   return (
-    <Modal open={open} onClose={onClose} title={title}>
-      {message && <p className="text-sm text-gray-600 mb-4">{message}</p>}
+    <Modal open={open} onClose={onClose} title={title} size="sm">
+      {message && <p className="text-sm text-muted-foreground mb-4">{message}</p>}
       {children}
       <div className="flex justify-end gap-3 mt-4">
-        <Button variant="secondary" onClick={onClose} disabled={loading}>Cancelar</Button>
-        <Button variant="danger" onClick={onConfirm} disabled={loading}>{loading ? "Aguarde..." : confirmLabel}</Button>
+        <Button variant="outline" onClick={onClose} disabled={loading}>Cancelar</Button>
+        <Button variant="destructive" onClick={onConfirm} disabled={loading}>{loading ? "Aguarde..." : confirmLabel}</Button>
       </div>
     </Modal>
   );

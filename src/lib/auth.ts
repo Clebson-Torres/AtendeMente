@@ -1,11 +1,4 @@
-const apiKey = import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyCMGKi2aHlRpOynxpjhb_7VZMMMqRaUa4Y";
-const authDomain = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "atendemente-432ab.firebaseapp.com";
-const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || "atendemente-432ab";
-const storageBucket = import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "atendemente-432ab.firebasestorage.app";
-const messagingSenderId = import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "416468948741";
-const appId = import.meta.env.VITE_FIREBASE_APP_ID || "1:416468948741:web:f08ce79a49801f1fc3496c";
-
-const hasFirebase = !!(apiKey && authDomain && projectId);
+const API = "http://localhost:3001/api";
 
 // ─── State ───────────────────────────────────────────────────────────────
 
@@ -13,6 +6,7 @@ type AuthUser = { uid: string; email: string | null } | null;
 type AuthCallback = (user: AuthUser) => void;
 
 let currentUser: AuthUser = null;
+
 let listeners: AuthCallback[] = [];
 
 function notify(user: AuthUser) {
@@ -20,58 +14,47 @@ function notify(user: AuthUser) {
   for (const cb of listeners) cb(user);
 }
 
-// ─── Dev-mode storage ────────────────────────────────────────────────────
+// ─── API helpers ─────────────────────────────────────────────────────────
 
-function devGetToken(): string | null {
-  return localStorage.getItem("token");
-}
+async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getStoredToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
 
-function devSetToken(id: string) {
-  localStorage.setItem("token", id);
-}
-
-function devClearToken() {
-  localStorage.removeItem("token");
-}
-
-// ─── Firebase initialisation (lazy, only if configured) ──────────────────
-
-let firebaseAuth: any = null;
-let initPromise: Promise<void> | null = null;
-
-async function initFirebase() {
-  if (!hasFirebase || firebaseAuth) return;
-
-  const { initializeApp } = await import("firebase/app");
-  const { getAuth, onAuthStateChanged, getIdToken } = await import("firebase/auth");
-
-  const app = initializeApp({ apiKey, authDomain, projectId, storageBucket, messagingSenderId, appId });
-  firebaseAuth = getAuth(app);
-
-  onAuthStateChanged(firebaseAuth, async (user) => {
-    if (user) {
-      const token = await getIdToken(user);
-      localStorage.setItem("token", token);
-      notify({ uid: user.uid, email: user.email });
-    } else {
-      localStorage.removeItem("token");
-      notify(null);
-    }
+  const res = await fetch(`${API}${path}`, {
+    method: body ? "POST" : "GET",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
   });
-}
 
-function ensureInit(): Promise<void> {
-  if (!initPromise) {
-    initPromise = initFirebase();
+  const json = await res.json();
+
+  if (!res.ok || !json.success) {
+    throw new Error(json.message || "Erro na requisição");
   }
-  return initPromise;
+  return json.data;
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────
+// ─── Token management (in-memory only — lost on app close) ───────────────
+
+let _token: string | null = null;
+
+function getStoredToken(): string | null {
+  return _token;
+}
+
+function storeToken(token: string) {
+  _token = token;
+}
+
+function clearToken() {
+  _token = null;
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────
 
 export function onAuthChange(cb: AuthCallback): () => void {
   listeners.push(cb);
-  // If we already have a user, notify immediately
   cb(currentUser);
   return () => {
     listeners = listeners.filter((l) => l !== cb);
@@ -79,48 +62,93 @@ export function onAuthChange(cb: AuthCallback): () => void {
 }
 
 export async function login(email: string, password: string): Promise<void> {
-  if (hasFirebase) {
-    await ensureInit();
-    const { signInWithEmailAndPassword, getIdToken } = await import("firebase/auth");
-    const cred = await signInWithEmailAndPassword(firebaseAuth, email, password);
-    const token = await getIdToken(cred.user);
-    localStorage.setItem("token", token);
-  } else {
-    // Dev mode: accept any credentials, use email as user ID
-    devSetToken(email);
-    notify({ uid: email, email });
+  const data = await apiRequest<{
+    token: string;
+    user_id: string;
+    email: string;
+    full_name: string;
+  }>("/auth/login", { email, password });
+
+  storeToken(data.token);
+  notify({ uid: data.user_id, email: data.email });
+}
+
+/** Complete authentication from stored token after registration */
+export async function completeFromStoredToken(): Promise<void> {
+  const token = getStoredToken();
+  if (!token) return;
+  try {
+    const data = await apiRequest<{ user_id: string; email: string }>("/auth/me");
+    notify({ uid: data.user_id, email: data.email });
+  } catch {
+    clearToken();
   }
+}
+
+// Clean up any stale token in localStorage (legacy from Firebase)
+localStorage.removeItem("token");
+
+export async function register(
+  email: string,
+  password: string,
+  fullName: string
+): Promise<{ user_id: string; recovery_secret: string }> {
+  const data = await apiRequest<{
+    token: string;
+    user_id: string;
+    email: string;
+    full_name: string;
+    recovery_secret: string;
+  }>("/auth/register", { email, password, full_name: fullName });
+
+  storeToken(data.token);
+
+  return {
+    user_id: data.user_id,
+    recovery_secret: data.recovery_secret,
+  };
 }
 
 export async function logout() {
-  if (hasFirebase && firebaseAuth) {
-    const { signOut } = await import("firebase/auth");
-    await signOut(firebaseAuth);
+  const token = getStoredToken();
+  if (token) {
+    try {
+      await apiRequest("/auth/logout");
+    } catch {
+      // Ignore errors, clear locally anyway
+    }
   }
-  devClearToken();
+  clearToken();
   notify(null);
 }
 
-export async function getCurrentToken(): Promise<string | null> {
-  if (hasFirebase && firebaseAuth) {
-    const { getIdToken } = await import("firebase/auth");
-    const user = (firebaseAuth as any).currentUser;
-    if (user) return getIdToken(user, true);
-  }
-  return devGetToken();
+export function getCurrentToken(): string | null {
+  return getStoredToken();
 }
 
-export function isDevMode(): boolean {
-  return !hasFirebase;
+export async function recoverPassword(
+  userId: string,
+  recoverySecret: string
+): Promise<string> {
+  const data = await apiRequest<{ reset_token: string }>("/auth/recover", {
+    user_id: userId,
+    recovery_secret: recoverySecret,
+  });
+  return data.reset_token;
 }
 
-// ─── Startup ─────────────────────────────────────────────────────────────
+export async function resetPassword(
+  resetToken: string,
+  newPassword: string
+): Promise<void> {
+  await apiRequest("/auth/reset-password", {
+    reset_token: resetToken,
+    new_password: newPassword,
+  });
+}
 
-// In dev mode, immediately restore session from localStorage
-if (!hasFirebase) {
-  const saved = devGetToken();
-  notify(saved ? { uid: saved, email: "dev@atendemente.local" } : null);
-} else {
-  // Start Firebase init in background
-  ensureInit();
+// ─── Session restore (no-op — token is in-memory only) ───────────────────
+
+export async function restoreSession(): Promise<void> {
+  notify(null);
 }

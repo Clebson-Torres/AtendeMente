@@ -1,23 +1,33 @@
-const statusStyles: Record<string, string> = {
-  active: "bg-green-100 text-green-800",
-  inactive: "bg-gray-100 text-gray-600",
-  confirmed: "bg-blue-100 text-blue-800",
-  pending: "bg-yellow-100 text-yellow-800",
-  cancelled: "bg-red-100 text-red-800",
-  completed: "bg-green-100 text-green-800",
-  paid: "bg-green-100 text-green-800",
-  unpaid: "bg-yellow-100 text-yellow-800",
-  partial: "bg-orange-100 text-orange-800",
+import { cn } from "../../lib/utils";
+
+const variants: Record<string, string> = {
+  active: "bg-success/10 text-success border-transparent",
+  inactive: "bg-muted text-muted-foreground border-transparent",
+  confirmed: "bg-accent text-accent-foreground border-transparent",
+  pending: "bg-yellow-100 text-yellow-800 border-transparent",
+  cancelled: "bg-destructive/10 text-destructive border-transparent",
+  completed: "bg-success/10 text-success border-transparent",
+  paid: "bg-success/10 text-success border-transparent",
+  unpaid: "bg-yellow-100 text-yellow-800 border-transparent",
+  partial: "bg-orange-100 text-orange-800 border-transparent",
 };
 
 interface Props {
   status: string;
+  className?: string;
+  outline?: boolean;
 }
 
-export default function StatusBadge({ status }: Props) {
-  const style = statusStyles[status.toLowerCase()] || "bg-gray-100 text-gray-600";
+export default function StatusBadge({ status, className, outline }: Props) {
+  const style = variants[status.toLowerCase()] || "bg-muted text-muted-foreground border-transparent";
   return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${style}`}>
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border",
+        outline ? "bg-transparent border-border text-muted-foreground" : style,
+        className,
+      )}
+    >
       {status}
     </span>
   );

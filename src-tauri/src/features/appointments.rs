@@ -164,17 +164,19 @@ async fn find_overlapping(
         AND starts_at < ? AND ends_at > ?"#,
     );
 
-    if let Some(eid) = exclude_id {
-        use std::fmt::Write;
-        write!(query, " AND id != '{}'", eid).unwrap();
+    if exclude_id.is_some() {
+        query.push_str(" AND id != ?");
     }
 
     query.push_str(" LIMIT 1");
 
-    let q = sqlx::query_as::<_, (String,)>(&query)
+    let mut q = sqlx::query_as::<_, (String,)>(&query)
         .bind(user_id)
         .bind(ends_at)
         .bind(starts_at);
+    if let Some(eid) = exclude_id {
+        q = q.bind(eid);
+    }
 
     let result = q.fetch_optional(db).await
         .map_err(|e| AppError::internal(format!("Overlap check failed: {}", e)))?;
@@ -281,8 +283,12 @@ pub async fn create_appointment(
     let confirmation = input.confirmation_status.as_deref().unwrap_or("unconfirmed");
     let price = input.session_price_cents.unwrap_or(0);
 
+    let mut first_appointment_id = None;
     for appt in &results {
         let id = Uuid::new_v4().to_string();
+        if first_appointment_id.is_none() {
+            first_appointment_id = Some(id.clone());
+        }
         sqlx::query(
             r#"INSERT INTO appointments (id, user_id, patient_id, series_id, starts_at, ends_at,
                 status, confirmation_status, session_price_cents, quick_notes, created_at, updated_at)
@@ -310,7 +316,9 @@ pub async fn create_appointment(
         Some(&serde_json::json!({"action": "create", "created_count": results.len()})), None, None,
     ).await?;
 
-    get_appointment_detail(db, user_id, &results[0].starts_at).await
+    let first_appointment_id = first_appointment_id
+        .ok_or_else(|| AppError::internal("Recurring series did not create appointments."))?;
+    get_appointment_detail(db, user_id, &first_appointment_id).await
 }
 
 pub async fn update_appointment(
@@ -442,4 +450,72 @@ pub async fn cancel_recurring_series(
     ).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> (tempfile::TempDir, sqlx::SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("appointments-test.db");
+        let url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+        let pool = crate::db::init_database(&url).await.unwrap();
+        (dir, pool)
+    }
+
+    async fn seed_patient(db: &SqlitePool, user_id: &str, patient_id: &str) {
+        let now = "2026-06-12T10:00:00";
+        sqlx::query(
+            "INSERT INTO users (id, email, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind("test@example.com")
+        .bind(now)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(patient_id)
+        .bind(user_id)
+        .bind("Paciente Teste")
+        .bind(now)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn creating_recurring_appointment_returns_first_created_appointment() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-recurring-create";
+        let patient_id = "patient-recurring-create";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let input = CreateAppointmentInput {
+            patient_id: patient_id.into(),
+            starts_at: "2026-06-15T09:00:00".into(),
+            ends_at: "2026-06-15T10:00:00".into(),
+            status: None,
+            confirmation_status: None,
+            session_price_cents: Some(20000),
+            quick_notes: None,
+            cancel_reason: None,
+            recurrence_frequency: Some("weekly".into()),
+            recurrence_end_mode: None,
+            recurrence_until_date: None,
+            recurrence_occurrences: Some(2),
+        };
+
+        let appointment = create_appointment(&db, user_id, &input).await.unwrap();
+
+        assert_eq!(appointment.patient_id, patient_id);
+        assert_eq!(appointment.starts_at, "2026-06-15T09:00:00");
+        assert!(appointment.series_id.is_some());
+    }
 }

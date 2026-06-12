@@ -8,6 +8,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import ConfirmDialog from "../components/ui/ConfirmDialog";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDateTime } from "../lib/format";
+import { ArrowLeft, Lock } from "lucide-react";
 
 export default function AppointmentDetail() {
   const { id } = useParams<{ id: string }>();
@@ -16,7 +17,6 @@ export default function AppointmentDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Payment
   const [payModal, setPayModal] = useState(false);
   const [payStatus, setPayStatus] = useState("paid");
   const [payMethod, setPayMethod] = useState("pix");
@@ -24,12 +24,10 @@ export default function AppointmentDetail() {
   const [payNotes, setPayNotes] = useState("");
   const [paying, setPaying] = useState(false);
 
-  // Record
   const [recordContent, setRecordContent] = useState("");
   const [recordLoading, setRecordLoading] = useState(false);
   const [recordSaving, setRecordSaving] = useState(false);
 
-  // Cancel
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
@@ -117,21 +115,26 @@ export default function AppointmentDetail() {
     }
   }
 
-  if (loading) return <div className="p-6 text-gray-500">Carregando...</div>;
-  if (error) return <div className="p-6 text-red-500">{error}</div>;
-  if (!appt) return <div className="p-6 text-gray-500">Atendimento não encontrado.</div>;
+  if (loading) return <div className="p-6 text-muted-foreground">Carregando...</div>;
+  if (error) return <div className="p-6 text-destructive">{error}</div>;
+  if (!appt) return <div className="p-6 text-muted-foreground">Atendimento não encontrado.</div>;
 
   const isCancelled = appt.status === "cancelled";
 
   return (
-    <div className="p-6 space-y-6">
-      <button onClick={() => navigate("/appointments")} className="text-sm text-blue-600 hover:text-blue-700">&larr; Voltar para Agenda</button>
+    <div className="p-4 sm:p-6 space-y-6 max-w-4xl">
+      <button
+        onClick={() => navigate("/appointments")}
+        className="flex items-center gap-1 text-sm text-primary hover:text-primary/80 transition-colors"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Voltar para Agenda
+      </button>
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">{appt.patient_name}</h1>
-          <p className="text-sm text-gray-500">{formatDateTime(appt.starts_at)} - {appt.ends_at.slice(11, 16)}</p>
+          <h1 className="text-2xl font-display font-semibold text-slate-900">{appt.patient_name}</h1>
+          <p className="text-sm text-muted-foreground">{formatDateTime(appt.starts_at)} - {appt.ends_at.slice(11, 16)}</p>
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={appt.status} />
@@ -140,20 +143,19 @@ export default function AppointmentDetail() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Payment section */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-          <h2 className="font-semibold text-gray-700 mb-3">Pagamento</h2>
+        <div className="app-surface p-5">
+          <h2 className="font-semibold text-slate-900 mb-3">Pagamento</h2>
           <div className="text-sm space-y-2">
-            <p><span className="text-gray-500">Valor da sessão:</span> <span className="font-medium">{formatBRL(appt.session_price_cents)}</span></p>
+            <p><span className="text-muted-foreground">Valor da sessão:</span> <span className="font-medium">{formatBRL(appt.session_price_cents)}</span></p>
             {appt.payment_status ? (
               <>
-                <p><span className="text-gray-500">Status:</span> <StatusBadge status={appt.payment_status} /></p>
-                <p><span className="text-gray-500">Método:</span> {appt.payment_method || "-"}</p>
-                <p><span className="text-gray-500">Recebido:</span> {appt.amount_received_cents ? formatBRL(appt.amount_received_cents) : "-"}</p>
-                <p><span className="text-gray-500">Data:</span> {formatDateTime(appt.paid_at)}</p>
+                <p><span className="text-muted-foreground">Status:</span> <StatusBadge status={appt.payment_status} /></p>
+                <p><span className="text-muted-foreground">Método:</span> {appt.payment_method || "-"}</p>
+                <p><span className="text-muted-foreground">Recebido:</span> {appt.amount_received_cents ? formatBRL(appt.amount_received_cents) : "-"}</p>
+                <p><span className="text-muted-foreground">Data:</span> {formatDateTime(appt.paid_at)}</p>
               </>
             ) : (
-              <p className="text-gray-400">Nenhum pagamento registrado.</p>
+              <p className="text-muted-foreground">Nenhum pagamento registrado.</p>
             )}
           </div>
           {!isCancelled && (
@@ -161,20 +163,24 @@ export default function AppointmentDetail() {
           )}
         </div>
 
-        {/* Cancel section */}
         {!isCancelled && (
-          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-            <h2 className="font-semibold text-gray-700 mb-3">Ações</h2>
-            <Button variant="danger" onClick={() => setCancelOpen(true)}>Cancelar Atendimento</Button>
+          <div className="app-surface p-5">
+            <h2 className="font-semibold text-slate-900 mb-3">Ações</h2>
+            <Button variant="destructive" onClick={() => setCancelOpen(true)}>Cancelar Atendimento</Button>
           </div>
         )}
       </div>
 
-      {/* Session Record */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-        <h2 className="font-semibold text-gray-700 mb-3">Prontuário da Sessão</h2>
+      <div className="app-surface p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <h2 className="font-semibold text-slate-900">Prontuário da Sessão</h2>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+            <Lock className="h-3 w-3" />
+            Criptografado
+          </span>
+        </div>
         {recordLoading ? (
-          <p className="text-gray-400 text-sm">Carregando...</p>
+          <p className="text-muted-foreground text-sm">Carregando...</p>
         ) : (
           <>
             <TextArea
@@ -191,7 +197,6 @@ export default function AppointmentDetail() {
         )}
       </div>
 
-      {/* Pay modal */}
       <ConfirmDialog
         open={payModal}
         onClose={() => setPayModal(false)}
@@ -204,16 +209,16 @@ export default function AppointmentDetail() {
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-              <select value={payStatus} onChange={(e) => setPayStatus(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+              <label className="block text-sm font-medium text-slate-800 mb-1">Status</label>
+              <select value={payStatus} onChange={(e) => setPayStatus(e.target.value)} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
                 <option value="paid">Pago</option>
                 <option value="unpaid">Pendente</option>
                 <option value="partial">Parcial</option>
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Método</label>
-              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500">
+              <label className="block text-sm font-medium text-slate-800 mb-1">Método</label>
+              <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
                 <option value="pix">PIX</option>
                 <option value="credit_card">Cartão de Crédito</option>
                 <option value="debit_card">Cartão de Débito</option>
@@ -228,7 +233,6 @@ export default function AppointmentDetail() {
         </div>
       </ConfirmDialog>
 
-      {/* Cancel dialog */}
       <ConfirmDialog
         open={cancelOpen}
         onClose={() => setCancelOpen(false)}

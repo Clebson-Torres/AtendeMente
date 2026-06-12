@@ -34,16 +34,16 @@ pub fn set_pepper(pepper: &[u8; 32]) {
     let _ = MASTER_PEPPER.set(*pepper);
 }
 
-/// Derive a 32-byte AES key from the user's Firebase UID and the master pepper (as salt).
-pub fn derive_user_key(firebase_uid: &str) -> Result<[u8; 32], AppError> {
+/// Derive a 32-byte AES key from the user's ID and the master pepper (as salt).
+pub fn derive_user_key(user_id: &str) -> Result<[u8; 32], AppError> {
     let pepper = MASTER_PEPPER
         .get()
         .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
-    Ok(derive_key_inner(firebase_uid, pepper))
+    Ok(derive_key_inner(user_id, pepper))
 }
 
-fn derive_key_inner(firebase_uid: &str, pepper: &[u8; 32]) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::new(Some(pepper), firebase_uid.as_bytes());
+fn derive_key_inner(user_id: &str, pepper: &[u8; 32]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(pepper), user_id.as_bytes());
     let mut okm = [0u8; 32];
     hk.expand(&[], &mut okm).expect("HKDF expand should not fail");
     okm

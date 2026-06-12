@@ -6,10 +6,10 @@ use rand::RngCore;
 #[derive(Clone)]
 pub struct AppConfig {
     pub database_url: String,
+    pub auth_database_url: String,
     pub server_port: u16,
     pub master_pepper: [u8; 32],
     pub storage_dir: PathBuf,
-    pub firebase_project_id: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -99,14 +99,17 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
 
 impl AppConfig {
     pub fn from_env() -> Self {
+        let home = || -> String {
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".into())
+        };
+
         Self {
             database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME")
-                        .or_else(|_| std::env::var("USERPROFILE"))
-                        .unwrap_or_else(|_| ".".into());
-                    format!("sqlite:{}/.config/atendemente/atendemente.db?mode=rwc", home)
-                }),
+                .unwrap_or_else(|_| format!("sqlite:{}/.config/atendemente/atendemente.db?mode=rwc", home())),
+            auth_database_url: std::env::var("AUTH_DATABASE_URL")
+                .unwrap_or_else(|_| format!("sqlite:{}/.config/atendemente/auth.db?mode=rwc", home())),
             server_port: std::env::var("SERVER_PORT")
                 .ok()
                 .and_then(|p| p.parse().ok())
@@ -115,15 +118,21 @@ impl AppConfig {
             storage_dir: std::env::var("STORAGE_DIR")
                 .ok()
                 .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    let home = std::env::var("HOME")
-                        .or_else(|_| std::env::var("USERPROFILE"))
-                        .unwrap_or_else(|_| ".".into());
-                    PathBuf::from(home).join(".config").join("atendemente").join("uploads")
-                }),
-            firebase_project_id: std::env::var("FIREBASE_PROJECT_ID")
-                .expect("FIREBASE_PROJECT_ID must be set"),
+                .unwrap_or_else(|| PathBuf::from(home()).join(".config").join("atendemente").join("uploads")),
         }
+    }
+
+    pub fn user_db_path(&self, user_id: &str) -> String {
+        let config_dir = PathBuf::from(
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".into()),
+        )
+        .join(".config")
+        .join("atendemente");
+        let dir = config_dir.join("data").join(user_id);
+        let _ = std::fs::create_dir_all(&dir);
+        format!("sqlite:{}/atendemente.db?mode=rwc", dir.display())
     }
 
     pub fn storage_path_for(

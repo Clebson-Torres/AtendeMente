@@ -1,3 +1,5 @@
+import { getCurrentToken } from "./auth";
+
 const API = "http://localhost:3001/api";
 
 type ApiResponse<T> = {
@@ -10,7 +12,7 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const token = localStorage.getItem("token");
+  const token = getCurrentToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
@@ -111,7 +113,7 @@ export const api = {
   exports: {
     patient: (id: string) =>
       fetch(`${API}/exports/patient/${id}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${getCurrentToken()}` },
       }).then((r) => r.blob()),
   },
 

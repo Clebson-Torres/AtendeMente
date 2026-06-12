@@ -9,6 +9,7 @@ import Modal from "../components/ui/Modal";
 import StatusBadge from "../components/ui/StatusBadge";
 import ConfirmDialog from "../components/ui/ConfirmDialog";
 import { toast } from "../components/ui/Toast";
+import { UsersRound, Plus, Search } from "lucide-react";
 
 export default function Patients() {
   const [patients, setPatients] = useState<PatientListItem[]>([]);
@@ -130,11 +131,11 @@ export default function Patients() {
       header: "",
       render: (p) => (
         <div className="flex gap-2 justify-end">
-          <Button variant="ghost" onClick={() => openEdit(p.id)}>Editar</Button>
+          <Button variant="ghost" size="sm" onClick={() => openEdit(p.id)}>Editar</Button>
           {p.status === "active" ? (
-            <Button variant="ghost" onClick={() => confirmDeactivate(p)}>Desativar</Button>
+            <Button variant="ghost" size="sm" onClick={() => confirmDeactivate(p)}>Desativar</Button>
           ) : (
-            <Button variant="ghost" onClick={() => confirmActivate(p)}>Reativar</Button>
+            <Button variant="ghost" size="sm" onClick={() => confirmActivate(p)}>Reativar</Button>
           )}
         </div>
       ),
@@ -142,27 +143,37 @@ export default function Patients() {
   ];
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="p-4 sm:p-6 space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gray-800">Pacientes</h1>
-        <Button onClick={openCreate}>+ Novo Paciente</Button>
+        <div className="flex items-center gap-3">
+          <UsersRound className="h-6 w-6 text-primary" />
+          <h1 className="text-2xl font-display font-semibold text-slate-900">Pacientes</h1>
+        </div>
+        <Button onClick={openCreate}>
+          <Plus className="h-4 w-4 mr-2" />
+          Novo Paciente
+        </Button>
       </div>
 
-      <Input
-        placeholder="Buscar por nome, telefone ou email..."
-        value={search}
-        onChange={(e) => {
-          setSearch(e.target.value);
-          load(e.target.value);
-        }}
-      />
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Buscar por nome, telefone ou email..."
+          value={search}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            load(e.target.value);
+          }}
+          className="pl-10"
+        />
+      </div>
 
-      {error && <p className="text-red-500 text-sm">{error}</p>}
+      {error && <p className="text-destructive text-sm">{error}</p>}
 
       {loading ? (
-        <div className="text-center py-12 text-gray-400">Carregando...</div>
+        <div className="text-center py-12 text-muted-foreground">Carregando...</div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100">
+        <div className="app-surface overflow-hidden">
           <DataTable
             columns={columns}
             data={patients}
@@ -176,6 +187,7 @@ export default function Patients() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         title={editId ? "Editar Paciente" : "Novo Paciente"}
+        size="lg"
       >
         <div className="space-y-4">
           <Input label="Nome completo *" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
@@ -192,7 +204,7 @@ export default function Patients() {
           <TextArea label="Medicações em Uso" rows={3} value={form.medications_in_use || ""} onChange={(e) => setForm({ ...form, medications_in_use: e.target.value || null })} />
           <TextArea label="Observações Administrativas" rows={3} value={form.admin_notes || ""} onChange={(e) => setForm({ ...form, admin_notes: e.target.value || null })} />
           <div className="flex justify-end gap-3 pt-2">
-            <Button variant="secondary" onClick={() => setModalOpen(false)}>Cancelar</Button>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>Cancelar</Button>
             <Button onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Button>
           </div>
         </div>

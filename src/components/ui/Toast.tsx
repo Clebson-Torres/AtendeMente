@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { cn } from "../../lib/utils";
 
 type ToastType = "success" | "error";
 
@@ -31,13 +32,14 @@ export default function ToastContainer() {
   }, []);
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 space-y-2">
+    <div className="fixed top-4 right-4 z-50 space-y-2">
       {toasts.map((t) => (
         <div
           key={t.id}
-          className={`px-4 py-2 rounded-lg shadow-lg text-sm font-medium text-white transition-all ${
-            t.type === "success" ? "bg-green-600" : "bg-red-600"
-          }`}
+          className={cn(
+            "animate-fade-in px-4 py-3 rounded-2xl shadow-soft text-sm font-medium text-white backdrop-blur",
+            t.type === "success" ? "bg-success" : "bg-destructive",
+          )}
         >
           {t.message}
         </div>

@@ -1,20 +1,38 @@
+import { cn } from "../../lib/utils";
 import type { ButtonHTMLAttributes } from "react";
 
-type Variant = "primary" | "secondary" | "danger" | "ghost";
+type Variant = "default" | "secondary" | "outline" | "ghost" | "destructive";
+type Size = "sm" | "default" | "lg";
 
 interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
+  size?: Size;
 }
 
-const base = "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50";
-
 const variants: Record<Variant, string> = {
-  primary: "bg-blue-600 text-white hover:bg-blue-700",
-  secondary: "bg-gray-100 text-gray-700 hover:bg-gray-200",
-  danger: "bg-red-600 text-white hover:bg-red-700",
-  ghost: "text-gray-600 hover:text-gray-900 hover:bg-gray-100",
+  default: "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm",
+  secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+  outline: "border border-border bg-white hover:bg-accent hover:text-accent-foreground",
+  ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+  destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
 };
 
-export default function Button({ variant = "primary", className = "", ...props }: Props) {
-  return <button className={`${base} ${variants[variant]} ${className}`} {...props} />;
+const sizes: Record<Size, string> = {
+  sm: "h-8 rounded-lg px-3 text-xs",
+  default: "h-10 rounded-xl px-4 text-sm",
+  lg: "h-12 rounded-xl px-6 text-base",
+};
+
+export default function Button({ variant = "default", size = "default", className, ...props }: Props) {
+  return (
+    <button
+      className={cn(
+        "inline-flex items-center justify-center font-medium transition-colors disabled:opacity-50",
+        variants[variant],
+        sizes[size],
+        className,
+      )}
+      {...props}
+    />
+  );
 }

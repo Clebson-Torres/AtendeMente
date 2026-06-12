@@ -42,11 +42,12 @@ pub async fn save_session_record(
     if let Some((record_id,)) = existing {
         sqlx::query(
             r#"UPDATE session_records SET
-                encrypted_payload = ?, iv = ?, key_version = ?, updated_at = ?
+                encrypted_payload = ?, iv = ?, auth_tag = ?, key_version = ?, updated_at = ?
             WHERE id = ? AND user_id = ? AND deleted_at IS NULL"#,
         )
         .bind(&encrypted.encrypted_payload)
         .bind(&encrypted.iv)
+        .bind(&encrypted.auth_tag)
         .bind(encrypted.key_version)
         .bind(&now)
         .bind(&record_id)
@@ -116,4 +117,86 @@ pub async fn get_session_record(
     };
 
     crypto::decrypt_content(&payload, user_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> (tempfile::TempDir, sqlx::SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("records-test.db");
+        let url = format!("sqlite:{}?mode=rwc", db_path.to_string_lossy());
+        let pool = crate::db::init_database(&url).await.unwrap();
+        (dir, pool)
+    }
+
+    async fn seed_appointment(db: &SqlitePool, user_id: &str, patient_id: &str, appointment_id: &str) {
+        let now = "2026-06-12T10:00:00";
+        sqlx::query(
+            "INSERT INTO users (id, email, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind("test@example.com")
+        .bind(now)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(patient_id)
+        .bind(user_id)
+        .bind("Paciente Teste")
+        .bind(now)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO appointments
+            (id, user_id, patient_id, starts_at, ends_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(appointment_id)
+        .bind(user_id)
+        .bind(patient_id)
+        .bind("2026-06-12T11:00:00")
+        .bind("2026-06-12T12:00:00")
+        .bind(now)
+        .bind(now)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn updating_session_record_keeps_it_decryptable() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-record-update";
+        let patient_id = "patient-record-update";
+        let appointment_id = "appointment-record-update";
+        crate::crypto::set_pepper(&[9u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_appointment(&db, user_id, patient_id, appointment_id).await;
+
+        let input = SaveRecordInput {
+            appointment_id: appointment_id.into(),
+            patient_id: patient_id.into(),
+            content: "Primeira versao".into(),
+        };
+        save_session_record(&db, user_id, &input).await.unwrap();
+
+        let updated = SaveRecordInput {
+            content: "Segunda versao".into(),
+            ..input
+        };
+        save_session_record(&db, user_id, &updated).await.unwrap();
+
+        let content = get_session_record(&db, user_id, appointment_id).await.unwrap();
+        assert_eq!(content, "Segunda versao");
+    }
 }
