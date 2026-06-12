@@ -1,29 +1,37 @@
 import { useState } from "react";
 import { useNavigate, Navigate, Link } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { login, recoverPassword, resetPassword } from "../lib/auth";
 import { useAuth } from "../App";
+import { loginSchema, resetPasswordSchema, type LoginInput } from "../lib/schemas";
+import FieldError from "../components/ui/FieldError";
 
 export default function Login() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState<"login" | "recover" | "reset">("login");
   const [recoveryFile, setRecoveryFile] = useState<{ user_id: string; recovery_secret: string } | null>(null);
   const [resetToken, setResetToken] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
-  const navigate = useNavigate();
-  const { user } = useAuth();
+
+  const { register, handleSubmit, formState: { errors } } = useForm<LoginInput>({
+    resolver: zodResolver(loginSchema),
+  });
+
+  const { register: registerReset, handleSubmit: handleResetSubmit, formState: { errors: resetErrors } } = useForm({
+    resolver: zodResolver(resetPasswordSchema),
+  });
 
   if (user) return <Navigate to="/" replace />;
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
+  async function onLogin(data: LoginInput) {
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
+      await login(data.email, data.password);
       navigate("/");
     } catch (err: any) {
       setError(err.message || "Erro ao fazer login");
@@ -42,9 +50,7 @@ export default function Login() {
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        if (!data.user_id || !data.recovery_secret) {
-          throw new Error("Arquivo inválido");
-        }
+        if (!data.user_id || !data.recovery_secret) throw new Error("Arquivo inválido");
         setRecoveryFile(data);
         setError("");
       } catch {
@@ -70,19 +76,14 @@ export default function Login() {
     }
   }
 
-  async function handleResetPassword(e: React.FormEvent) {
-    e.preventDefault();
+  async function onResetPassword(data: { new_password: string }) {
     setError("");
     setLoading(true);
     try {
-      await resetPassword(resetToken, newPassword);
-      setSuccessMsg("");
+      await resetPassword(resetToken, data.new_password);
       setMode("login");
       setError("");
-      setNewPassword("");
       setRecoveryFile(null);
-      setEmail("");
-      setPassword("");
       alert("Senha redefinida com sucesso! Faça login com sua nova senha.");
     } catch (err: any) {
       setError(err.message || "Erro ao redefinir senha");
@@ -115,88 +116,49 @@ export default function Login() {
                 <p className="text-success/70 text-xs mt-1">Usuário: {recoveryFile.user_id.slice(0, 12)}...</p>
               </div>
             ) : (
-              <button
-                onClick={handleSelectFile}
-                className="w-full border-2 border-dashed border-border text-muted-foreground py-4 rounded-2xl hover:border-primary hover:text-primary transition-colors"
-              >
+              <button type="button" onClick={handleSelectFile} className="w-full border-2 border-dashed border-border text-muted-foreground py-4 rounded-2xl hover:border-primary hover:text-primary transition-colors">
                 Clique para selecionar o arquivo
               </button>
             )}
             {recoveryFile && (
-              <button
-                onClick={handleRecover}
-                disabled={loading}
-                className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors"
-              >
+              <button type="button" onClick={handleRecover} disabled={loading} className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors">
                 {loading ? "Verificando..." : "Verificar chave"}
               </button>
             )}
-            <button
-              onClick={() => { setMode("login"); setError(""); setRecoveryFile(null); }}
-              className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
+            <button type="button" onClick={() => { setMode("login"); setError(""); setRecoveryFile(null); }} className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors">
               Voltar para o login
             </button>
           </div>
         )}
 
         {mode === "reset" && (
-          <form onSubmit={handleResetPassword} className="space-y-4">
-            <input
-              type="password"
-              placeholder="Nova senha (mínimo 6 caracteres)"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              required
-              minLength={6}
-              className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors"
-            >
+          <form onSubmit={handleResetSubmit(onResetPassword)} className="space-y-4">
+            <div>
+              <input type="password" placeholder="Nova senha (mínimo 6 caracteres)" {...registerReset("new_password")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1" />
+              <FieldError message={resetErrors.new_password?.message} />
+            </div>
+            <button type="submit" disabled={loading} className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors">
               {loading ? "Redefinindo..." : "Redefinir senha"}
             </button>
           </form>
         )}
 
         {mode === "login" && (
-          <form onSubmit={handleLogin} className="space-y-4">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-            />
-            <input
-              type="password"
-              placeholder="Senha"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-            />
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors"
-            >
+          <form onSubmit={handleSubmit(onLogin)} className="space-y-4">
+            <div>
+              <input type="email" placeholder="Email" {...register("email")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1" />
+              <FieldError message={errors.email?.message} />
+            </div>
+            <div>
+              <input type="password" placeholder="Senha" {...register("password")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1" />
+              <FieldError message={errors.password?.message} />
+            </div>
+            <button type="submit" disabled={loading} className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors">
               {loading ? "Entrando..." : "Entrar"}
             </button>
             <div className="flex justify-between text-sm">
-              <button
-                type="button"
-                onClick={() => setMode("recover")}
-                className="text-primary hover:underline"
-              >
-                Esqueceu a senha?
-              </button>
-              <Link to="/register" className="text-primary hover:underline">
-                Criar conta
-              </Link>
+              <button type="button" onClick={() => setMode("recover")} className="text-primary hover:underline">Esqueceu a senha?</button>
+              <Link to="/register" className="text-primary hover:underline">Criar conta</Link>
             </div>
           </form>
         )}

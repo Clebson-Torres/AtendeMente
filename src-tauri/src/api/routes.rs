@@ -70,6 +70,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/patients/{id}", get(get_patient).put(update_patient))
         .route("/patients/{id}/activate", post(activate_patient))
         .route("/patients/{id}/deactivate", post(deactivate_patient))
+        .route("/patients/{id}/appointments", get(list_patient_appointments))
         .route("/appointments", get(list_calendar).post(create_appointment))
         .route("/appointments/{id}", get(get_appointment).put(update_appointment))
         .route("/appointments/{id}/cancel", post(cancel_appointment))
@@ -164,6 +165,17 @@ async fn deactivate_patient(
     let db = state.get_or_open_user_db(&user.id).await?;
     let patient = features::patients::set_patient_status(&db, &user.id, &id, false).await?;
     Ok(Json(ActionResponse::success("Paciente desativado com sucesso.", patient)))
+}
+
+async fn list_patient_appointments(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<ActionResponse<Vec<crate::db::models::CalendarEvent>>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    let events = features::appointments::list_patient_appointments(&db, &user.id, &id).await?;
+    Ok(Json(ActionResponse::success("", events)))
 }
 
 // ─── Appointments ───────────────────────────────────────────────────────────

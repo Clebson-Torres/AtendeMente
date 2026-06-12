@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Patients from "./pages/Patients";
+import PatientDetail from "./pages/PatientDetail";
 import Appointments from "./pages/Appointments";
 import AppointmentDetail from "./pages/AppointmentDetail";
 import Payments from "./pages/Payments";
@@ -60,6 +61,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/patients" element={<Patients />} />
+                  <Route path="/patients/:id" element={<PatientDetail />} />
                   <Route path="/appointments" element={<Appointments />} />
                   <Route path="/appointments/:id" element={<AppointmentDetail />} />
                   <Route path="/payments" element={<Payments />} />

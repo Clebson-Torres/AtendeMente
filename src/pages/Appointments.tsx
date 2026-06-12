@@ -1,13 +1,17 @@
 import { useEffect, useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { api, type CalendarEvent, type CreateAppointmentInput, type PatientListItem } from "../lib/api";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
 import Select from "../components/ui/Select";
 import Modal from "../components/ui/Modal";
 import StatusBadge from "../components/ui/StatusBadge";
+import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatTime } from "../lib/format";
+import { appointmentSchema, type AppointmentInput } from "../lib/schemas";
 import { CalendarDays, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 
 const DAY_NAMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
@@ -23,11 +27,12 @@ export default function Appointments() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [patients, setPatients] = useState<PatientListItem[]>([]);
-  const [form, setForm] = useState<CreateAppointmentInput>({
-    patient_id: "",
-    starts_at: "",
-    ends_at: "",
+
+  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<AppointmentInput>({
+    resolver: zodResolver(appointmentSchema),
+    defaultValues: { patient_id: "", starts_at: "", ends_at: "" },
   });
+
   const [saving, setSaving] = useState(false);
 
   const [dayEvents, setDayEvents] = useState<CalendarEvent[]>([]);
@@ -58,21 +63,19 @@ export default function Appointments() {
 
     const d = date || new Date();
     d.setMinutes(0, 0, 0);
-    const startStr = d.toISOString().slice(0, 16);
-    const endStr = new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16);
-
-    setForm({ patient_id: "", starts_at: startStr, ends_at: endStr, status: "scheduled", confirmation_status: "pending", session_price_cents: 0 });
+    reset({
+      patient_id: "",
+      starts_at: d.toISOString().slice(0, 16),
+      ends_at: new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16),
+      session_price_cents: 0,
+    });
     setModalOpen(true);
   }
 
-  async function handleSave() {
-    if (!form.patient_id || !form.starts_at || !form.ends_at) {
-      toast("Preencha paciente, início e fim.", "error");
-      return;
-    }
+  async function onSave(data: AppointmentInput) {
     setSaving(true);
     try {
-      await api.appointments.create(form);
+      await api.appointments.create(data as CreateAppointmentInput);
       toast("Atendimento agendado.");
       setModalOpen(false);
       loadEvents();
@@ -115,30 +118,17 @@ export default function Appointments() {
           <CalendarDays className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-display font-semibold text-slate-900">Agenda</h1>
         </div>
-        <Button onClick={() => openCreate()}>
-          <Plus className="h-4 w-4 mr-2" />
-          Novo Atendimento
-        </Button>
+        <Button onClick={() => openCreate()}><Plus className="h-4 w-4 mr-2" />Novo Atendimento</Button>
       </div>
 
       <div className="app-surface">
         <div className="flex items-center justify-between px-4 py-3">
-          <button
-            onClick={() => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else setMonth(m => m - 1); }}
-            className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors text-sm"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Anterior
+          <button onClick={() => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else setMonth(m => m - 1); }} className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors text-sm">
+            <ChevronLeft className="h-4 w-4" /> Anterior
           </button>
-          <span className="font-display text-lg font-semibold text-slate-900">
-            {MONTH_NAMES[month]} {year}
-          </span>
-          <button
-            onClick={() => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else setMonth(m => m + 1); }}
-            className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors text-sm"
-          >
-            Próximo
-            <ChevronRight className="h-4 w-4" />
+          <span className="font-display text-lg font-semibold text-slate-900">{MONTH_NAMES[month]} {year}</span>
+          <button onClick={() => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else setMonth(m => m + 1); }} className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors text-sm">
+            Próximo <ChevronRight className="h-4 w-4" />
           </button>
         </div>
 
@@ -147,9 +137,7 @@ export default function Appointments() {
         ) : (
           <>
             <div className="grid grid-cols-7 border-t border-border">
-              {DAY_NAMES.map((d) => (
-                <div key={d} className="text-center text-xs font-medium text-muted-foreground py-2 border-b border-border">{d}</div>
-              ))}
+              {DAY_NAMES.map((d) => <div key={d} className="text-center text-xs font-medium text-muted-foreground py-2 border-b border-border">{d}</div>)}
             </div>
             <div className="grid grid-cols-7">
               {calendarDays.map((day, i) => {
@@ -157,22 +145,16 @@ export default function Appointments() {
                 const isOtherMonth = day !== null && day < 0;
                 const displayDay = day !== null ? (day < 0 ? -day : day) : null;
                 const count = day !== null && day > 0 ? eventsOnDay(day) : 0;
-
                 return (
-                  <div
-                    key={i}
-                    onClick={() => day !== null && day > 0 && clickDay(day)}
-                    className={`min-h-[90px] border-b border-r border-border/50 p-1.5 cursor-pointer transition-colors hover:bg-accent/50 ${isOtherMonth ? "text-muted-foreground/40" : ""} ${isCurrentDay ? "bg-accent/30" : ""}`}
-                  >
+                  <div key={i} onClick={() => day !== null && day > 0 && clickDay(day)}
+                    className={`min-h-[90px] border-b border-r border-border/50 p-1.5 cursor-pointer transition-colors hover:bg-accent/50 ${isOtherMonth ? "text-muted-foreground/40" : ""} ${isCurrentDay ? "bg-accent/30" : ""}`}>
                     {displayDay && (
                       <>
                         <div className={`text-xs mb-1 ${isCurrentDay ? "font-bold text-primary" : "text-muted-foreground"}`}>{displayDay}</div>
                         {count > 0 && (
                           <div className="flex flex-wrap gap-0.5">
                             {events.filter(e => e.start.startsWith(`${year}-${String(month + 1).padStart(2, "0")}-${String(displayDay).padStart(2, "0")}`)).slice(0, 3).map(e => (
-                              <div key={e.id} className="w-full text-[10px] truncate text-primary-foreground bg-primary/80 rounded-md px-1 py-0.5 font-medium">
-                                {e.title}
-                              </div>
+                              <div key={e.id} className="w-full text-[10px] truncate text-primary-foreground bg-primary/80 rounded-md px-1 py-0.5 font-medium">{e.title}</div>
                             ))}
                             {count > 3 && <div className="text-[10px] text-muted-foreground">+{count - 3} mais</div>}
                           </div>
@@ -193,11 +175,8 @@ export default function Appointments() {
         ) : (
           <div className="space-y-2">
             {dayEvents.map((e) => (
-              <div
-                key={e.id}
-                className="flex items-center justify-between p-3 bg-muted/50 rounded-xl cursor-pointer hover:bg-accent transition-colors"
-                onClick={() => { setDayPopupOpen(false); navigate(`/appointments/${e.id}`); }}
-              >
+              <div key={e.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-xl cursor-pointer hover:bg-accent transition-colors"
+                onClick={() => { setDayPopupOpen(false); navigate(`/appointments/${e.id}`); }}>
                 <div>
                   <p className="text-sm font-medium text-slate-900">{e.title}</p>
                   <p className="text-xs text-muted-foreground">{formatTime(e.start)} - {formatTime(e.end)}</p>
@@ -216,21 +195,25 @@ export default function Appointments() {
       </Modal>
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Novo Atendimento">
-        <div className="space-y-4">
-          <Select
-            label="Paciente *"
-            value={form.patient_id}
-            onChange={(e) => setForm({ ...form, patient_id: e.target.value })}
-            options={[{ value: "", label: "Selecione..." }, ...patients.map((p) => ({ value: p.id, label: p.full_name }))]}
-          />
-          <Input label="Início *" type="datetime-local" value={form.starts_at} onChange={(e) => setForm({ ...form, starts_at: e.target.value })} />
-          <Input label="Fim *" type="datetime-local" value={form.ends_at} onChange={(e) => setForm({ ...form, ends_at: e.target.value })} />
-          <Input label="Valor da Sessão (R$)" type="number" step="0.01" value={(form.session_price_cents || 0) / 100} onChange={(e) => setForm({ ...form, session_price_cents: Math.round(parseFloat(e.target.value || "0") * 100) })} />
-          <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={() => setModalOpen(false)}>Cancelar</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Agendar"}</Button>
+        <form onSubmit={handleSubmit(onSave)} className="space-y-4">
+          <div>
+            <Select label="Paciente *" {...register("patient_id")} options={[{ value: "", label: "Selecione..." }, ...patients.map((p) => ({ value: p.id, label: p.full_name }))]} />
+            <FieldError message={errors.patient_id?.message} />
           </div>
-        </div>
+          <div>
+            <Input label="Início *" type="datetime-local" {...register("starts_at")} />
+            <FieldError message={errors.starts_at?.message} />
+          </div>
+          <div>
+            <Input label="Fim *" type="datetime-local" {...register("ends_at")} />
+            <FieldError message={errors.ends_at?.message} />
+          </div>
+          <Input label="Valor da Sessão (R$)" type="number" step="0.01" onChange={(e) => setValue("session_price_cents", Math.round(parseFloat(e.target.value || "0") * 100))} />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="outline" type="button" onClick={() => setModalOpen(false)}>Cancelar</Button>
+            <Button type="submit" disabled={saving}>{saving ? "Salvando..." : "Agendar"}</Button>
+          </div>
+        </form>
       </Modal>
     </div>
   );

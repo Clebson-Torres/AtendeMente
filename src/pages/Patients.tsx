@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type PatientListItem, type Patient, type CreatePatientInput } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { api, type PatientListItem, type CreatePatientInput } from "../lib/api";
 import DataTable from "../components/ui/DataTable";
 import type { Column } from "../components/ui/DataTable";
 import Button from "../components/ui/Button";
@@ -8,10 +11,13 @@ import TextArea from "../components/ui/TextArea";
 import Modal from "../components/ui/Modal";
 import StatusBadge from "../components/ui/StatusBadge";
 import ConfirmDialog from "../components/ui/ConfirmDialog";
+import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
+import { patientSchema, type PatientInput } from "../lib/schemas";
 import { UsersRound, Plus, Search } from "lucide-react";
 
 export default function Patients() {
+  const navigate = useNavigate();
   const [patients, setPatients] = useState<PatientListItem[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -19,7 +25,12 @@ export default function Patients() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState<CreatePatientInput>({ full_name: "" });
+
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<PatientInput>({
+    resolver: zodResolver(patientSchema),
+    defaultValues: { full_name: "" },
+  });
+
   const [saving, setSaving] = useState(false);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -43,7 +54,7 @@ export default function Patients() {
 
   function openCreate() {
     setEditId(null);
-    setForm({ full_name: "" });
+    reset({ full_name: "" });
     setModalOpen(true);
   }
 
@@ -51,16 +62,16 @@ export default function Patients() {
     try {
       const p = await api.patients.get(id);
       setEditId(id);
-      setForm({
+      reset({
         full_name: p.full_name,
-        chart_number: p.chart_number,
-        phone: p.phone,
-        email: p.email,
-        birth_date: p.birth_date,
-        health_history: p.health_history,
-        medications_in_use: p.medications_in_use,
-        emergency_phone: p.emergency_phone,
-        admin_notes: p.admin_notes,
+        chart_number: p.chart_number ?? undefined,
+        phone: p.phone ?? undefined,
+        email: p.email ?? undefined,
+        birth_date: p.birth_date ?? undefined,
+        health_history: p.health_history ?? undefined,
+        medications_in_use: p.medications_in_use ?? undefined,
+        emergency_phone: p.emergency_phone ?? undefined,
+        admin_notes: p.admin_notes ?? undefined,
       });
       setModalOpen(true);
     } catch (e: any) {
@@ -68,15 +79,14 @@ export default function Patients() {
     }
   }
 
-  async function handleSave() {
-    if (!form.full_name.trim()) { toast("Nome é obrigatório", "error"); return; }
+  async function onSave(data: PatientInput) {
     setSaving(true);
     try {
       if (editId) {
-        await api.patients.update(editId, form);
+        await api.patients.update(editId, data as CreatePatientInput);
         toast("Paciente atualizado.");
       } else {
-        await api.patients.create(form);
+        await api.patients.create(data as CreatePatientInput);
         toast("Paciente cadastrado.");
       }
       setModalOpen(false);
@@ -91,11 +101,8 @@ export default function Patients() {
   function confirmDeactivate(p: PatientListItem) {
     setConfirmTitle(`Desativar ${p.full_name}?`);
     setConfirmAction(() => async () => {
-      try {
-        await api.patients.deactivate(p.id);
-        toast("Paciente desativado.");
-        load(search);
-      } catch (e: any) { toast(e.message, "error"); }
+      try { await api.patients.deactivate(p.id); toast("Paciente desativado."); load(search); }
+      catch (e: any) { toast(e.message, "error"); }
     });
     setConfirmOpen(true);
   }
@@ -103,11 +110,8 @@ export default function Patients() {
   function confirmActivate(p: PatientListItem) {
     setConfirmTitle(`Reativar ${p.full_name}?`);
     setConfirmAction(() => async () => {
-      try {
-        await api.patients.activate(p.id);
-        toast("Paciente reativado.");
-        load(search);
-      } catch (e: any) { toast(e.message, "error"); }
+      try { await api.patients.activate(p.id); toast("Paciente reativado."); load(search); }
+      catch (e: any) { toast(e.message, "error"); }
     });
     setConfirmOpen(true);
   }
@@ -116,27 +120,17 @@ export default function Patients() {
     { key: "full_name", header: "Nome", className: "font-medium" },
     { key: "chart_number", header: "Prontuário" },
     { key: "phone", header: "Telefone" },
+    { key: "birth_date", header: "Nascimento", render: (p) => p.birth_date ? new Date(p.birth_date).toLocaleDateString("pt-BR") : "-" },
+    { key: "status", header: "Status", render: (p) => <StatusBadge status={p.status} /> },
     {
-      key: "birth_date",
-      header: "Nascimento",
-      render: (p) => p.birth_date ? new Date(p.birth_date).toLocaleDateString("pt-BR") : "-",
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (p) => <StatusBadge status={p.status} />,
-    },
-    {
-      key: "actions",
-      header: "",
+      key: "actions", header: "",
       render: (p) => (
         <div className="flex gap-2 justify-end">
+          <Button variant="ghost" size="sm" onClick={() => navigate(`/patients/${p.id}`)}>Detalhes</Button>
           <Button variant="ghost" size="sm" onClick={() => openEdit(p.id)}>Editar</Button>
-          {p.status === "active" ? (
-            <Button variant="ghost" size="sm" onClick={() => confirmDeactivate(p)}>Desativar</Button>
-          ) : (
-            <Button variant="ghost" size="sm" onClick={() => confirmActivate(p)}>Reativar</Button>
-          )}
+          {p.status === "active"
+            ? <Button variant="ghost" size="sm" onClick={() => confirmDeactivate(p)}>Desativar</Button>
+            : <Button variant="ghost" size="sm" onClick={() => confirmActivate(p)}>Reativar</Button>}
         </div>
       ),
     },
@@ -149,23 +143,12 @@ export default function Patients() {
           <UsersRound className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-display font-semibold text-slate-900">Pacientes</h1>
         </div>
-        <Button onClick={openCreate}>
-          <Plus className="h-4 w-4 mr-2" />
-          Novo Paciente
-        </Button>
+        <Button onClick={openCreate}><Plus className="h-4 w-4 mr-2" />Novo Paciente</Button>
       </div>
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Buscar por nome, telefone ou email..."
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            load(e.target.value);
-          }}
-          className="pl-10"
-        />
+        <Input placeholder="Buscar por nome, telefone ou email..." value={search} onChange={(e) => { setSearch(e.target.value); load(e.target.value); }} className="pl-10" />
       </div>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
@@ -174,50 +157,45 @@ export default function Patients() {
         <div className="text-center py-12 text-muted-foreground">Carregando...</div>
       ) : (
         <div className="app-surface overflow-hidden">
-          <DataTable
-            columns={columns}
-            data={patients}
-            keyExtractor={(p) => p.id}
-            emptyMessage="Nenhum paciente cadastrado. Clique em '+ Novo Paciente' para começar."
-          />
+          <DataTable columns={columns} data={patients} keyExtractor={(p) => p.id} emptyMessage="Nenhum paciente cadastrado. Clique em '+ Novo Paciente' para começar." />
         </div>
       )}
 
-      <Modal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editId ? "Editar Paciente" : "Novo Paciente"}
-        size="lg"
-      >
-        <div className="space-y-4">
-          <Input label="Nome completo *" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Nº Prontuário" value={form.chart_number || ""} onChange={(e) => setForm({ ...form, chart_number: e.target.value || null })} />
-            <Input label="Telefone" value={form.phone || ""} onChange={(e) => setForm({ ...form, phone: e.target.value || null })} />
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editId ? "Editar Paciente" : "Novo Paciente"} size="lg">
+        <form onSubmit={handleSubmit(onSave)} className="space-y-4">
+          <div>
+            <Input label="Nome completo *" {...register("full_name")} />
+            <FieldError message={errors.full_name?.message} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="Email" type="email" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value || null })} />
-            <Input label="Data de Nascimento" type="date" value={form.birth_date || ""} onChange={(e) => setForm({ ...form, birth_date: e.target.value || null })} />
+            <div>
+              <Input label="Nº Prontuário" {...register("chart_number")} />
+              <FieldError message={errors.chart_number?.message} />
+            </div>
+            <div>
+              <Input label="Telefone" {...register("phone")} />
+              <FieldError message={errors.phone?.message} />
+            </div>
           </div>
-          <Input label="Telefone de Emergência" value={form.emergency_phone || ""} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value || null })} />
-          <TextArea label="Histórico de Saúde" rows={3} value={form.health_history || ""} onChange={(e) => setForm({ ...form, health_history: e.target.value || null })} />
-          <TextArea label="Medicações em Uso" rows={3} value={form.medications_in_use || ""} onChange={(e) => setForm({ ...form, medications_in_use: e.target.value || null })} />
-          <TextArea label="Observações Administrativas" rows={3} value={form.admin_notes || ""} onChange={(e) => setForm({ ...form, admin_notes: e.target.value || null })} />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Input label="Email" type="email" {...register("email")} />
+              <FieldError message={errors.email?.message} />
+            </div>
+            <Input label="Data de Nascimento" type="date" {...register("birth_date")} />
+          </div>
+          <Input label="Telefone de Emergência" {...register("emergency_phone")} />
+          <TextArea label="Histórico de Saúde" rows={3} {...register("health_history")} />
+          <TextArea label="Medicações em Uso" rows={3} {...register("medications_in_use")} />
+          <TextArea label="Observações Administrativas" rows={3} {...register("admin_notes")} />
           <div className="flex justify-end gap-3 pt-2">
-            <Button variant="outline" onClick={() => setModalOpen(false)}>Cancelar</Button>
-            <Button onClick={handleSave} disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Button>
+            <Button variant="outline" type="button" onClick={() => setModalOpen(false)}>Cancelar</Button>
+            <Button type="submit" disabled={saving}>{saving ? "Salvando..." : "Salvar"}</Button>
           </div>
-        </div>
+        </form>
       </Modal>
 
-      <ConfirmDialog
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        onConfirm={confirmAction}
-        title={confirmTitle}
-        message="Essa ação pode ser revertida depois."
-        confirmLabel="Confirmar"
-      />
+      <ConfirmDialog open={confirmOpen} onClose={() => setConfirmOpen(false)} onConfirm={confirmAction} title={confirmTitle} message="Essa ação pode ser revertida depois." confirmLabel="Confirmar" />
     </div>
   );
 }

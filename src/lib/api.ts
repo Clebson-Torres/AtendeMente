@@ -49,6 +49,8 @@ export const api = {
       request<Patient>(`/patients/${id}/activate`, { method: "POST" }),
     deactivate: (id: string) =>
       request<Patient>(`/patients/${id}/deactivate`, { method: "POST" }),
+    appointments: (id: string) =>
+      request<CalendarEvent[]>(`/patients/${id}/appointments`),
   },
 
   appointments: {

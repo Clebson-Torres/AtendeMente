@@ -72,6 +72,38 @@ pub async fn list_calendar_events(
         .collect())
 }
 
+pub async fn list_patient_appointments(
+    db: &SqlitePool,
+    user_id: &str,
+    patient_id: &str,
+) -> Result<Vec<CalendarEvent>, AppError> {
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+        r#"SELECT a.id, a.patient_id, p.full_name, a.starts_at, a.ends_at, a.status, a.confirmation_status
+        FROM appointments a
+        INNER JOIN patients p ON p.id = a.patient_id
+        WHERE a.user_id = ? AND a.patient_id = ? AND a.deleted_at IS NULL
+        ORDER BY a.starts_at DESC"#,
+    )
+    .bind(user_id)
+    .bind(patient_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Failed to list patient appointments: {}", e)))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| CalendarEvent {
+            id: r.0,
+            patient_id: r.1,
+            title: r.2,
+            start: r.3,
+            end: r.4,
+            status: r.5,
+            confirmation_status: r.6,
+        })
+        .collect())
+}
+
 pub async fn get_appointment_detail(
     db: &SqlitePool,
     user_id: &str,
