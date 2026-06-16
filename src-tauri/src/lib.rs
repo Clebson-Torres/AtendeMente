@@ -68,7 +68,7 @@ impl AppState {
     }
 }
 
-pub async fn run_server(state: Arc<AppState>, _app: AppHandle) {
+pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
     let auth_router = crate::auth::create_auth_router(state.clone());
     let api_routes = api::routes::create_router(state.clone());
 

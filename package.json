@@ -9,9 +9,11 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "powershell -ExecutionPolicy Bypass -File e2e/run-e2e.ps1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

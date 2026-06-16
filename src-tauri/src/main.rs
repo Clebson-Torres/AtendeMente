@@ -60,7 +60,7 @@ async fn main() {
             let state = state.clone();
 
             tokio::spawn(async move {
-                run_server(state, handle).await;
+                run_server(state, Some(handle)).await;
             });
 
             Ok(())

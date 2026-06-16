@@ -9,6 +9,10 @@ edition = "2021"
 name = "atendemente_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "server"
+path = "src/bin/server.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
