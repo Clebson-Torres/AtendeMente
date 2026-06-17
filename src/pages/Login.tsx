@@ -134,7 +134,7 @@ export default function Login() {
         {mode === "reset" && (
           <form onSubmit={handleResetSubmit(onResetPassword)} className="space-y-4">
             <div>
-              <input type="password" placeholder="Nova senha (mínimo 6 caracteres)" {...registerReset("new_password")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1" />
+              <input type="password" placeholder="Nova senha (mínimo 8 caracteres)" {...registerReset("new_password")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1" />
               <FieldError message={resetErrors.new_password?.message} />
             </div>
             <button type="submit" disabled={loading} className="w-full bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium disabled:opacity-50 transition-colors">

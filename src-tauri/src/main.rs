@@ -56,7 +56,14 @@ async fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state.clone())
-        .invoke_handler(tauri::generate_handler![save_recovery_file])
+        .invoke_handler(tauri::generate_handler![
+            save_recovery_file,
+            atendemente_lib::commands::cmd_export_patient_zip,
+            atendemente_lib::commands::cmd_list_files_by_appointment,
+            atendemente_lib::commands::cmd_download_file,
+            atendemente_lib::commands::cmd_upload_file_content,
+            atendemente_lib::commands::cmd_confirm_file_upload,
+        ])
         .setup(move |app| {
             let handle = app.handle().clone();
             let state = state.clone();

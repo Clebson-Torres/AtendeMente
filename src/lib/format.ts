@@ -4,7 +4,8 @@ export function formatBRL(cents: number): string {
 
 export function formatDate(iso: string | null): string {
   if (!iso) return "-";
-  return new Date(iso).toLocaleDateString("pt-BR");
+  const [y, m, d] = iso.split("T")[0].split("-");
+  return `${d}/${m}/${y}`;
 }
 
 export function formatTime(iso: string | null): string {
@@ -14,8 +15,7 @@ export function formatTime(iso: string | null): string {
 
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "-";
-  const d = new Date(iso);
-  return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return formatDate(iso) + " " + formatTime(iso);
 }
 
 export function formatPhone(value: string | null | undefined): string {

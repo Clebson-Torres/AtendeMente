@@ -14,6 +14,7 @@ import ConfirmDialog from "../components/ui/ConfirmDialog";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { patientSchema, type PatientInput } from "../lib/schemas";
+import { formatDate } from "../lib/format";
 import { UsersRound, Plus, Search } from "lucide-react";
 
 export default function Patients() {
@@ -120,7 +121,7 @@ export default function Patients() {
     { key: "full_name", header: "Nome", className: "font-medium" },
     { key: "chart_number", header: "Prontuário" },
     { key: "phone", header: "Telefone" },
-    { key: "birth_date", header: "Nascimento", render: (p) => p.birth_date ? new Date(p.birth_date).toLocaleDateString("pt-BR") : "-" },
+    { key: "birth_date", header: "Nascimento", render: (p) => formatDate(p.birth_date) },
     { key: "status", header: "Status", render: (p) => <StatusBadge status={p.status} /> },
     {
       key: "actions", header: "",

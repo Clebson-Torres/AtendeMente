@@ -10,12 +10,12 @@ import {
 
 describe("loginSchema", () => {
   it("validates correct input", () => {
-    const result = loginSchema.safeParse({ email: "test@test.com", password: "123456" });
+    const result = loginSchema.safeParse({ email: "test@test.com", password: "12345678" });
     expect(result.success).toBe(true);
   });
 
   it("rejects invalid email", () => {
-    const result = loginSchema.safeParse({ email: "invalid", password: "123456" });
+    const result = loginSchema.safeParse({ email: "invalid", password: "12345678" });
     expect(result.success).toBe(false);
   });
 
@@ -30,7 +30,7 @@ describe("registerSchema", () => {
     const result = registerSchema.safeParse({
       full_name: "João Silva",
       email: "joao@test.com",
-      password: "123456",
+      password: "12345678",
     });
     expect(result.success).toBe(true);
   });
@@ -39,7 +39,7 @@ describe("registerSchema", () => {
     const result = registerSchema.safeParse({
       full_name: "J",
       email: "joao@test.com",
-      password: "123456",
+      password: "12345678",
     });
     expect(result.success).toBe(false);
   });
@@ -48,7 +48,7 @@ describe("registerSchema", () => {
     const result = registerSchema.safeParse({
       full_name: "João Silva",
       email: "joao@test.com",
-      password: "12345",
+      password: "1234567",
     });
     expect(result.success).toBe(false);
   });
@@ -137,12 +137,12 @@ describe("paymentSchema", () => {
 
 describe("resetPasswordSchema", () => {
   it("validates correct input", () => {
-    const result = resetPasswordSchema.safeParse({ new_password: "123456" });
+    const result = resetPasswordSchema.safeParse({ new_password: "12345678" });
     expect(result.success).toBe(true);
   });
 
   it("rejects short password", () => {
-    const result = resetPasswordSchema.safeParse({ new_password: "12345" });
+    const result = resetPasswordSchema.safeParse({ new_password: "1234567" });
     expect(result.success).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ export const loginSchema = z.object({
 export const registerSchema = z.object({
   full_name: z.string().min(2, "Nome deve ter no mínimo 2 caracteres"),
   email: z.string().email("Email inválido"),
-  password: z.string().min(6, "Senha deve ter no mínimo 6 caracteres"),
+  password: z.string().min(8, "Senha deve ter no mínimo 8 caracteres"),
 });
 
 export const patientSchema = z.object({
@@ -39,7 +39,7 @@ export const paymentSchema = z.object({
 });
 
 export const resetPasswordSchema = z.object({
-  new_password: z.string().min(6, "Senha deve ter no mínimo 6 caracteres"),
+  new_password: z.string().min(8, "Senha deve ter no mínimo 8 caracteres"),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

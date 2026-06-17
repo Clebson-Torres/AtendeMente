@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -82,9 +83,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/records/save", post(save_record))
         .route("/records/{appointment_id}", get(get_record))
         .route("/files/upload-session", post(create_upload_session))
+        .route("/files/upload/{file_id}", put(upload_file_content))
         .route("/files/confirm", post(confirm_file_upload))
+        .route("/files/appointment/{appointment_id}", get(list_files_by_appointment))
         .route("/files/{id}/download", get(download_file))
-        .route("/exports/patient/{id}", post(export_patient))
+        .route("/exports/patient/{id}", get(export_patient))
         .route("/dashboard", get(dashboard))
         .with_state(state)
 }
@@ -339,6 +342,29 @@ async fn create_upload_session(
         "file_id": file_id,
         "storage_path": storage_path,
     }))))
+}
+
+async fn upload_file_content(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(file_id): Path<String>,
+    body: Bytes,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    features::files::write_upload_content(&db, &user.id, &file_id, &body).await?;
+    Ok(Json(ActionResponse::<()>::success_empty("Conteúdo do arquivo salvo.")))
+}
+
+async fn list_files_by_appointment(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(appointment_id): Path<String>,
+) -> Result<Json<ActionResponse<Vec<crate::db::models::RecordFile>>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    let files = features::files::list_files_by_appointment(&db, &user.id, &appointment_id).await?;
+    Ok(Json(ActionResponse::success("", files)))
 }
 
 async fn confirm_file_upload(

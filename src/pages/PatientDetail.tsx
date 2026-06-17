@@ -4,7 +4,7 @@ import { api, type Patient, type CalendarEvent } from "../lib/api";
 import Button from "../components/ui/Button";
 import StatusBadge from "../components/ui/StatusBadge";
 import { formatDate, formatTime } from "../lib/format";
-import { ArrowLeft, User, Phone, Calendar, FileText } from "lucide-react";
+import { ArrowLeft, User, Phone, Calendar, FileText, Download } from "lucide-react";
 
 export default function PatientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -12,6 +12,7 @@ export default function PatientDetail() {
   const [patient, setPatient] = useState<Patient | null>(null);
   const [appointments, setAppointments] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -29,6 +30,28 @@ export default function PatientDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  async function handleExport() {
+    if (!id) return;
+    setExporting(true);
+    try {
+      const blob = await api.exports.patient(id);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (e: any) {
+      setError(e.message || "Erro ao exportar");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   if (loading) return <div className="p-6 text-muted-foreground">Carregando...</div>;
   if (error) return <div className="p-6 text-destructive">{error}</div>;
   if (!patient) return <div className="p-6 text-muted-foreground">Paciente não encontrado.</div>;
@@ -40,22 +63,25 @@ export default function PatientDetail() {
       </button>
 
       <div className="app-surface p-6">
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-4">
-            <div className="h-14 w-14 rounded-full bg-accent flex items-center justify-center">
-              <User className="h-6 w-6 text-accent-foreground" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-display font-semibold text-slate-900">{patient.full_name}</h1>
-              <div className="flex items-center gap-2 mt-1">
-                <StatusBadge status={patient.status} />
-                {patient.chart_number && (
-                  <span className="text-xs text-muted-foreground">Prontuário: {patient.chart_number}</span>
-                )}
+          <div className="flex items-start justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4">
+              <div className="h-14 w-14 rounded-full bg-accent flex items-center justify-center">
+                <User className="h-6 w-6 text-accent-foreground" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-display font-semibold text-slate-900">{patient.full_name}</h1>
+                <div className="flex items-center gap-2 mt-1">
+                  <StatusBadge status={patient.status} />
+                  {patient.chart_number && (
+                    <span className="text-xs text-muted-foreground">Prontuário: {patient.chart_number}</span>
+                  )}
+                </div>
               </div>
             </div>
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+              <Download className="h-4 w-4 mr-2" />{exporting ? "Exportando..." : "Exportar ZIP"}
+            </Button>
           </div>
-        </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
           {patient.phone && (

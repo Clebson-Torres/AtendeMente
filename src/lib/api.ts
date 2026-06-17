@@ -2,6 +2,15 @@ import { getCurrentToken } from "./auth";
 
 const API = "http://localhost:3001/api";
 
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
 type ApiResponse<T> = {
   success: boolean;
   message: string;
@@ -104,19 +113,97 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    confirm: (fileId: string) =>
-      request<RecordFile>("/files/confirm", {
+    confirm: async (fileId: string): Promise<RecordFile> => {
+      if (isTauri()) {
+        return tauriInvoke<RecordFile>("cmd_confirm_file_upload", {
+          token: getCurrentToken(),
+          fileId,
+        });
+      }
+      return request<RecordFile>("/files/confirm", {
         method: "POST",
         body: JSON.stringify({ file_id: fileId }),
-      }),
-    download: (id: string) => `${API}/files/${id}/download`,
+      });
+    },
+    list: async (appointmentId: string): Promise<RecordFile[]> => {
+      if (isTauri()) {
+        return tauriInvoke<RecordFile[]>("cmd_list_files_by_appointment", {
+          token: getCurrentToken(),
+          appointmentId,
+        });
+      }
+      return request<RecordFile[]>(`/files/appointment/${appointmentId}`);
+    },
+    uploadContent: async (fileId: string, data: Blob): Promise<void> => {
+      if (isTauri()) {
+        const buffer = await data.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const contentBase64 = btoa(binary);
+        return tauriInvoke<void>("cmd_upload_file_content", {
+          token: getCurrentToken(),
+          fileId,
+          contentBase64,
+        });
+      }
+      const res = await fetch(`${API}/files/upload/${fileId}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${getCurrentToken()}`,
+          "Content-Type": "application/octet-stream",
+        },
+        body: data,
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.message || "Upload failed");
+    },
+    download: async (fileId: string): Promise<{ blob: Blob; fileName: string }> => {
+      if (isTauri()) {
+        const result = await tauriInvoke<DownloadResult>("cmd_download_file", {
+          token: getCurrentToken(),
+          fileId,
+        });
+        const byteString = atob(result.content_base64);
+        const bytes = new Uint8Array(byteString.length);
+        for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+        return {
+          blob: new Blob([bytes], { type: result.mime_type }),
+          fileName: result.original_name,
+        };
+      }
+      const res = await fetch(`${API}/files/${fileId}/download`, {
+        headers: { Authorization: `Bearer ${getCurrentToken()}` },
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.message || "Download failed");
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition");
+      const fileName = disposition?.match(/filename="?(.+?)"?$/)?.[1] || "download";
+      return { blob, fileName };
+    },
   },
 
   exports: {
-    patient: (id: string) =>
-      fetch(`${API}/exports/patient/${id}`, {
+    patient: async (id: string): Promise<Blob | void> => {
+      if (isTauri()) {
+        await tauriInvoke<string>("cmd_export_patient_zip", {
+          token: getCurrentToken(),
+          patientId: id,
+        });
+        return;
+      }
+      const res = await fetch(`${API}/exports/patient/${id}`, {
         headers: { Authorization: `Bearer ${getCurrentToken()}` },
-      }).then((r) => r.blob()),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.message || "Export failed");
+      }
+      return res.blob();
+    },
   },
 
   dashboard: () =>
@@ -276,6 +363,15 @@ export interface FileUploadRequest {
   file_name: string;
   file_size: number;
   mime_type: string;
+}
+
+export interface DownloadResult {
+  id: string;
+  original_name: string;
+  mime_type: string;
+  byte_size: number;
+  uploaded_at: string;
+  content_base64: string;
 }
 
 export interface FinancialSummary {

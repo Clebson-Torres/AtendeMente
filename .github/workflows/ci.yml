@@ -158,6 +158,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: release-build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:

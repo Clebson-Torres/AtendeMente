@@ -12,8 +12,10 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDateTime } from "../lib/format";
 import { paymentSchema, type PaymentInput } from "../lib/schemas";
-import { ArrowLeft, Lock, Calendar } from "lucide-react";
+import { ArrowLeft, Lock, Calendar, Upload, File } from "lucide-react";
 import RescheduleDialog from "../components/RescheduleDialog";
+import FileUploadButton from "../components/FileUploadButton";
+import FileList from "../components/FileList";
 
 export default function AppointmentDetail() {
   const { id } = useParams<{ id: string }>();
@@ -166,6 +168,14 @@ export default function AppointmentDetail() {
             <Button variant="destructive" onClick={() => setCancelOpen(true)} className="w-full">Cancelar Atendimento</Button>
           </div>
         )}
+      </div>
+
+      <div className="app-surface p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-slate-900">Arquivos</h2>
+          <FileUploadButton appointmentId={appt.id} patientId={appt.patient_id} onUploadComplete={load} />
+        </div>
+        <FileList appointmentId={appt.id} />
       </div>
 
       <div className="app-surface p-5">
