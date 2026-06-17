@@ -12,7 +12,7 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatTime } from "../lib/format";
 import { appointmentSchema, type AppointmentInput } from "../lib/schemas";
-import { CalendarDays, ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat } from "lucide-react";
 
 const DAY_NAMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
@@ -28,12 +28,14 @@ export default function Appointments() {
   const [modalOpen, setModalOpen] = useState(false);
   const [patients, setPatients] = useState<PatientListItem[]>([]);
 
-  const { register, handleSubmit, reset, setValue, formState: { errors } } = useForm<AppointmentInput>({
+  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<AppointmentInput>({
     resolver: zodResolver(appointmentSchema),
     defaultValues: { patient_id: "", starts_at: "", ends_at: "" },
   });
 
   const [saving, setSaving] = useState(false);
+  const [recurrenceEnabled, setRecurrenceEnabled] = useState(false);
+  const recurrenceEndMode = watch("recurrence_end_mode");
 
   const [dayEvents, setDayEvents] = useState<CalendarEvent[]>([]);
   const [dayPopupOpen, setDayPopupOpen] = useState(false);
@@ -57,8 +59,8 @@ export default function Appointments() {
 
   async function openCreate(date?: Date) {
     try {
-      const list = await api.patients.list();
-      setPatients(list.filter((p) => p.status === "active"));
+      const result = await api.patients.list();
+      setPatients(result.items.filter((p) => p.status === "active"));
     } catch { setPatients([]); }
 
     const d = date || new Date();
@@ -69,13 +71,24 @@ export default function Appointments() {
       ends_at: new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16),
       session_price_cents: 0,
     });
+    setRecurrenceEnabled(false);
     setModalOpen(true);
   }
 
   async function onSave(data: AppointmentInput) {
     setSaving(true);
     try {
-      await api.appointments.create(data as CreateAppointmentInput);
+      const input: CreateAppointmentInput = {
+        ...data,
+        recurrence_occurrences: data.recurrence_occurrences ? parseInt(data.recurrence_occurrences, 10) : undefined,
+      };
+      if (!recurrenceEnabled) {
+        delete input.recurrence_frequency;
+        delete input.recurrence_end_mode;
+        delete input.recurrence_occurrences;
+        delete input.recurrence_until_date;
+      }
+      await api.appointments.create(input);
       toast("Atendimento agendado.");
       setModalOpen(false);
       loadEvents();
@@ -145,7 +158,16 @@ export default function Appointments() {
                 const isOtherMonth = day !== null && day < 0;
                 const displayDay = day !== null ? (day < 0 ? -day : day) : null;
                 const count = day !== null && day > 0 ? eventsOnDay(day) : 0;
-                return (
+  function statusBgColor(status: string): string {
+    switch (status) {
+      case "completed": return "bg-green-500/80";
+      case "cancelled": return "bg-red-500/80";
+      case "no_show": return "bg-gray-400/80";
+      default: return "bg-primary/80";
+    }
+  }
+
+  return (
                   <div key={i} onClick={() => day !== null && day > 0 && clickDay(day)}
                     className={`min-h-[90px] border-b border-r border-border/50 p-1.5 cursor-pointer transition-colors hover:bg-accent/50 ${isOtherMonth ? "text-muted-foreground/40" : ""} ${isCurrentDay ? "bg-accent/30" : ""}`}>
                     {displayDay && (
@@ -154,7 +176,7 @@ export default function Appointments() {
                         {count > 0 && (
                           <div className="flex flex-wrap gap-0.5">
                             {events.filter(e => e.start.startsWith(`${year}-${String(month + 1).padStart(2, "0")}-${String(displayDay).padStart(2, "0")}`)).slice(0, 3).map(e => (
-                              <div key={e.id} className="w-full text-[10px] truncate text-primary-foreground bg-primary/80 rounded-md px-1 py-0.5 font-medium">{e.title}</div>
+                              <div key={e.id} className={`w-full text-[10px] truncate text-primary-foreground ${statusBgColor(e.status)} rounded-md px-1 py-0.5 font-medium`}>{e.title}</div>
                             ))}
                             {count > 3 && <div className="text-[10px] text-muted-foreground">+{count - 3} mais</div>}
                           </div>
@@ -209,6 +231,51 @@ export default function Appointments() {
             <FieldError message={errors.ends_at?.message} />
           </div>
           <Input label="Valor da Sessão (R$)" type="number" step="0.01" onChange={(e) => setValue("session_price_cents", Math.round(parseFloat(e.target.value || "0") * 100))} />
+
+          <div className="flex items-center gap-2 pt-1">
+            <input type="checkbox" id="recurrence-toggle" checked={recurrenceEnabled}
+              onChange={(e) => { setRecurrenceEnabled(e.target.checked); if (!e.target.checked) { setValue("recurrence_frequency", undefined); setValue("recurrence_end_mode", undefined); } }}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-primary" />
+            <label htmlFor="recurrence-toggle" className="text-sm font-medium flex items-center gap-1 cursor-pointer">
+              <Repeat className="h-4 w-4 text-primary" /> Repetir
+            </label>
+          </div>
+
+          {recurrenceEnabled && (
+            <div className="space-y-4 pl-1 border-l-2 border-primary/30 pl-3">
+              <div>
+                <Select label="Frequência" {...register("recurrence_frequency")}
+                  options={[
+                    { value: "weekly", label: "Semanal" },
+                    { value: "biweekly", label: "Quinzenal" },
+                    { value: "monthly", label: "Mensal" },
+                  ]} />
+                <FieldError message={errors.recurrence_frequency?.message} />
+              </div>
+              <div>
+                <Select label="Encerrar" {...register("recurrence_end_mode")}
+                  options={[
+                    { value: "occurrences", label: "Após número de sessões" },
+                    { value: "until_date", label: "Em data específica" },
+                  ]} />
+                <FieldError message={errors.recurrence_end_mode?.message} />
+              </div>
+              {recurrenceEndMode === "occurrences" && (
+                <div>
+                  <Input label="Número de sessões" type="number" min={2} max={52} defaultValue={4}
+                    {...register("recurrence_occurrences")} />
+                  <FieldError message={errors.recurrence_occurrences?.message} />
+                </div>
+              )}
+              {recurrenceEndMode === "until_date" && (
+                <div>
+                  <Input label="Até a data" type="date" {...register("recurrence_until_date")} />
+                  <FieldError message={errors.recurrence_until_date?.message} />
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-2">
             <Button variant="outline" type="button" onClick={() => setModalOpen(false)}>Cancelar</Button>
             <Button type="submit" disabled={saving}>{saving ? "Salvando..." : "Agendar"}</Button>

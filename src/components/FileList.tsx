@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type RecordFile } from "../lib/api";
 import Button from "./ui/Button";
-import { Download, FileText, FileImage, FileIcon } from "lucide-react";
+import ConfirmDialog from "./ui/ConfirmDialog";
+import { Download, Trash2, FileText, FileImage, FileIcon } from "lucide-react";
 
 interface Props {
   appointmentId: string;
@@ -11,6 +12,8 @@ interface Props {
 export default function FileList({ appointmentId, onRefresh }: Props) {
   const [files, setFiles] = useState<RecordFile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -55,6 +58,19 @@ export default function FileList({ appointmentId, onRefresh }: Props) {
     }
   }
 
+  async function handleDelete(fileId: string) {
+    setDeleting(fileId);
+    try {
+      await api.files.delete(fileId);
+      setFiles((prev) => prev.filter((f) => f.id !== fileId));
+      onRefresh?.();
+    } catch {
+      console.error("Delete failed");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   if (loading) return <div className="text-muted-foreground text-sm py-4">Carregando arquivos...</div>;
 
   if (files.length === 0) {
@@ -81,12 +97,29 @@ export default function FileList({ appointmentId, onRefresh }: Props) {
               </p>
             </div>
           </div>
-          <button
-            onClick={() => handleDownload(f)}
-            className="text-primary hover:text-primary/80 text-sm flex items-center gap-1"
-          >
-            <Download className="h-4 w-4" /> Baixar
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleDownload(f)}
+              className="text-primary hover:text-primary/80 text-sm flex items-center gap-1"
+            >
+              <Download className="h-4 w-4" /> Baixar
+            </button>
+            <ConfirmDialog
+              open={confirmDelete === f.id}
+              onClose={() => setConfirmDelete(null)}
+              onConfirm={() => { setConfirmDelete(null); handleDelete(f.id); }}
+              title="Excluir arquivo"
+              message={`Tem certeza que deseja excluir "${f.original_name}"?`}
+              confirmLabel="Excluir"
+              loading={deleting === f.id}
+            />
+            <button
+              onClick={() => setConfirmDelete(f.id)}
+              className="text-destructive hover:text-destructive/80 text-sm flex items-center gap-1"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       ))}
     </div>

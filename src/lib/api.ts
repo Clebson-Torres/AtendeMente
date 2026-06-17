@@ -29,7 +29,14 @@ async function request<T>(
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(`${API}${path}`, { ...options, headers });
-  const json: ApiResponse<T> = await res.json();
+
+  let json: ApiResponse<T>;
+  try {
+    json = await res.json();
+  } catch {
+    const text = await res.text();
+    throw new Error(text || `Erro ${res.status}`);
+  }
 
   if (!res.ok || !json.success) {
     throw new Error(json.message || "Erro na requisição");
@@ -41,8 +48,8 @@ export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
 
   patients: {
-    list: (search?: string) =>
-      request<PatientListItem[]>(`/patients${search ? `?search=${search}` : ""}`),
+    list: (search?: string, page = 1, perPage = 50) =>
+      request<PaginatedResult<PatientListItem>>(`/patients?search=${search ?? ""}&page=${page}&per_page=${perPage}`),
     get: (id: string) => request<Patient>(`/patients/${id}`),
     create: (data: CreatePatientInput) =>
       request<Patient>("/patients", {
@@ -60,6 +67,16 @@ export const api = {
       request<Patient>(`/patients/${id}/deactivate`, { method: "POST" }),
     appointments: (id: string) =>
       request<CalendarEvent[]>(`/patients/${id}/appointments`),
+    importPreview: (contentBase64: string) =>
+      request<{ session_id: string; preview: { total_rows: number; valid_rows: number; error_rows: number; rows: any[] } }>("/patients/import/preview", {
+        method: "POST",
+        body: JSON.stringify({ content_base64: contentBase64 }),
+      }),
+    importCommit: (sessionId: string, rows: any[]) =>
+      request<{ imported: number }>("/patients/import/commit", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, rows }),
+      }),
   },
 
   appointments: {
@@ -71,7 +88,7 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: CreateAppointmentInput) =>
+    update: (id: string, data: Partial<CreateAppointmentInput>) =>
       request<AppointmentDetail>(`/appointments/${id}`, {
         method: "PUT",
         body: JSON.stringify(data),
@@ -183,6 +200,9 @@ export const api = {
       const disposition = res.headers.get("content-disposition");
       const fileName = disposition?.match(/filename="?(.+?)"?$/)?.[1] || "download";
       return { blob, fileName };
+    },
+    delete: async (fileId: string): Promise<void> => {
+      await request(`/files/${fileId}`, { method: "DELETE" });
     },
   },
 
@@ -383,4 +403,11 @@ export interface DashboardData {
   appointments_count: number;
   todays_appointments: CalendarEvent[];
   upcoming_appointments: CalendarEvent[];
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  per_page: number;
 }

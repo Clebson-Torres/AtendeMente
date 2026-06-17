@@ -3,10 +3,13 @@ import { cn } from "../../lib/utils";
 const variants: Record<string, string> = {
   active: "bg-success/10 text-success border-transparent",
   inactive: "bg-muted text-muted-foreground border-transparent",
+  scheduled: "bg-blue-100 text-blue-800 border-transparent",
   confirmed: "bg-accent text-accent-foreground border-transparent",
+  unconfirmed: "bg-yellow-100 text-yellow-800 border-transparent",
   pending: "bg-yellow-100 text-yellow-800 border-transparent",
   cancelled: "bg-destructive/10 text-destructive border-transparent",
   completed: "bg-success/10 text-success border-transparent",
+  no_show: "bg-gray-100 text-gray-600 border-transparent",
   paid: "bg-success/10 text-success border-transparent",
   unpaid: "bg-yellow-100 text-yellow-800 border-transparent",
   partial: "bg-orange-100 text-orange-800 border-transparent",

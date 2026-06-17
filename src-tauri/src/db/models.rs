@@ -189,6 +189,18 @@ pub struct CreateAppointmentInput {
     pub recurrence_occurrences: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateAppointmentInput {
+    pub patient_id: Option<String>,
+    pub starts_at: Option<String>,
+    pub ends_at: Option<String>,
+    pub status: Option<String>,
+    pub confirmation_status: Option<String>,
+    pub session_price_cents: Option<i64>,
+    pub quick_notes: Option<String>,
+    pub cancel_reason: Option<String>,
+}
+
 // ─── Recurring Series ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

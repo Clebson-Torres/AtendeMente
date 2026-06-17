@@ -4,16 +4,17 @@ use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::db::models::{
     CreateAppointmentInput, CreatePatientInput, FileUploadRequest, SaveRecordInput,
-    UpdatePatientInput, UpsertPaymentInput,
+    UpdateAppointmentInput, UpdatePatientInput, UpsertPaymentInput,
 };
-use crate::errors::{ActionResponse, AppError};
+use crate::errors::{ActionResponse, AppError, PaginatedData};
 use crate::features;
 use crate::AppState;
 
@@ -28,6 +29,8 @@ pub struct CalendarQuery {
 #[derive(Deserialize)]
 pub struct PatientSearchQuery {
     pub search: Option<String>,
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -87,7 +90,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/files/confirm", post(confirm_file_upload))
         .route("/files/appointment/{appointment_id}", get(list_files_by_appointment))
         .route("/files/{id}/download", get(download_file))
+        .route("/files/{id}", delete(delete_file_handler))
         .route("/exports/patient/{id}", get(export_patient))
+        .route("/patients/import/preview", post(import_preview))
+        .route("/patients/import/commit", post(import_commit))
         .route("/dashboard", get(dashboard))
         .with_state(state)
 }
@@ -107,11 +113,13 @@ async fn list_patients(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<PatientSearchQuery>,
-) -> Result<Json<ActionResponse<Vec<crate::db::models::PatientListItem>>>, AppError> {
+) -> Result<Json<ActionResponse<PaginatedData<crate::db::models::PatientListItem>>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let patients = features::patients::list_patients(&db, &user.id, query.search.as_deref().unwrap_or("")).await?;
-    Ok(Json(ActionResponse::success("", patients)))
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
+    let result = features::patients::list_patients(&db, &user.id, query.search.as_deref().unwrap_or(""), page, per_page).await?;
+    Ok(Json(ActionResponse::success("", result)))
 }
 
 async fn create_patient(
@@ -220,7 +228,7 @@ async fn update_appointment(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(input): Json<CreateAppointmentInput>,
+    Json(input): Json<UpdateAppointmentInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::AppointmentDetail>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
@@ -397,6 +405,17 @@ async fn download_file(
     ))
 }
 
+async fn delete_file_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    features::files::delete_file(&db, &user.id, &id).await?;
+    Ok(Json(ActionResponse::<()>::success_empty("Arquivo excluído.")))
+}
+
 // ─── Exports ────────────────────────────────────────────────────────────────
 
 async fn export_patient(
@@ -416,6 +435,69 @@ async fn export_patient(
         ],
         bundle.buffer,
     ))
+}
+
+// ─── Import ────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ImportPayload {
+    pub content_base64: String,
+}
+
+#[derive(Serialize)]
+pub struct ImportState {
+    pub session_id: String,
+    pub preview: crate::features::patients_import::ImportPreview,
+}
+
+async fn import_preview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ImportPayload>,
+) -> Result<Json<ActionResponse<ImportState>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+
+    crate::rate_limit::enforce_rate_limit(&db, "import", &user.id, 5, 3600_000).await?;
+
+    let data = base64_decode(&payload.content_base64)?;
+    let preview = crate::features::patients_import::parse_csv_bytes(&data)?;
+
+    let session_id = Uuid::new_v4().to_string();
+
+    Ok(Json(ActionResponse::success("", ImportState {
+        session_id,
+        preview,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ImportCommitPayload {
+    pub session_id: String,
+    pub rows: Vec<crate::features::patients_import::CsvRow>,
+}
+
+async fn import_commit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ImportCommitPayload>,
+) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+
+    let imported = crate::features::patients_import::commit_import(
+        &db, &user.id, &payload.rows,
+    ).await?;
+
+    Ok(Json(ActionResponse::success("", serde_json::json!({
+        "imported": imported,
+    }))))
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, AppError> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    engine.decode(input).map_err(|e| AppError::bad_request(format!("Erro ao decodificar base64: {}", e)))
 }
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────

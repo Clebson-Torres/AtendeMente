@@ -5,5 +5,6 @@ pub mod dashboard;
 pub mod exports;
 pub mod files;
 pub mod patients;
+pub mod patients_import;
 pub mod payments;
 pub mod records;

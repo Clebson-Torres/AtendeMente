@@ -1,5 +1,9 @@
 # AtendeMente Local
 
+<p align="center">
+  <img src="src-tauri/icons/128x128.png" width="128" height="128" alt="AtendeMente Logo" style="border-radius: 24px; background: #1e293b; padding: 12px;">
+</p>
+
 Aplicação desktop para gestão de consultórios de psicologia. Combina shell Tauri v2,
 frontend React/Vite/TypeScript com API embarcada Rust/Axum e SQLite local.
 

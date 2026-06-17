@@ -28,11 +28,15 @@ export const appointmentSchema = z.object({
   starts_at: z.string().min(1, "Informe o início"),
   ends_at: z.string().min(1, "Informe o fim"),
   session_price_cents: z.number().optional(),
+  recurrence_frequency: z.enum(["weekly", "biweekly", "monthly"]).optional(),
+  recurrence_end_mode: z.enum(["occurrences", "until_date"]).optional(),
+  recurrence_occurrences: z.string().optional(),
+  recurrence_until_date: z.string().optional(),
 });
 
 export const paymentSchema = z.object({
-  status: z.string().min(1, "Selecione o status"),
-  method: z.string().min(1, "Selecione o método"),
+  status: z.enum(["paid", "pending", "cancelled"], { message: "Selecione o status" }),
+  method: z.enum(["pix", "card", "cash", "bank_transfer", "other"], { message: "Selecione o método" }),
   amount_received_cents: z.number().min(0, "Valor deve ser positivo"),
   notes: z.string().optional(),
   paid_at: z.string().nullable().optional(),
