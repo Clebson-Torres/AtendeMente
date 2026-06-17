@@ -40,6 +40,10 @@ export default function AppointmentDetail() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
 
+  const [completing, setCompleting] = useState(false);
+  const [noShowing, setNoShowing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
 
   async function load() {
@@ -48,7 +52,7 @@ export default function AppointmentDetail() {
     try {
       const data = await api.appointments.get(id);
       setAppt(data);
-      resetPay({ status: "paid", method: "pix", amount_received_cents: data.session_price_cents });
+      resetPay({ status: "paid", method: "pix", amount_received_cents: data.session_price_cents / 100 });
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -77,7 +81,7 @@ export default function AppointmentDetail() {
         status: data.status,
         method: data.method,
         paid_at: data.status === "paid" ? new Date().toISOString() : null,
-        amount_received_cents: data.amount_received_cents,
+        amount_received_cents: Math.round(data.amount_received_cents * 100),
         notes: data.notes || undefined,
       });
       toast("Pagamento registrado.");
@@ -118,11 +122,55 @@ export default function AppointmentDetail() {
     }
   }
 
+  async function handleComplete() {
+    if (!id) return;
+    setCompleting(true);
+    try {
+      await api.appointments.update(id, { status: "completed" });
+      toast("Atendimento concluído.");
+      load();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setCompleting(false);
+    }
+  }
+
+  async function handleNoShow() {
+    if (!id) return;
+    setNoShowing(true);
+    try {
+      await api.appointments.update(id, { status: "no_show" });
+      toast("Presença não confirmada.");
+      load();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setNoShowing(false);
+    }
+  }
+
+  async function handleToggleConfirm() {
+    if (!id || !appt) return;
+    setConfirming(true);
+    try {
+      const newStatus = appt.confirmation_status === "confirmed" ? "unconfirmed" : "confirmed";
+      await api.appointments.update(id, { confirmation_status: newStatus });
+      toast(newStatus === "confirmed" ? "Atendimento confirmado." : "Confirmação removida.");
+      load();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setConfirming(false);
+    }
+  }
+
   if (loading) return <div className="p-6 text-muted-foreground">Carregando...</div>;
   if (error) return <div className="p-6 text-destructive">{error}</div>;
   if (!appt) return <div className="p-6 text-muted-foreground">Atendimento não encontrado.</div>;
 
   const isCancelled = appt.status === "cancelled";
+  const isScheduled = appt.status === "scheduled";
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-4xl">
@@ -162,6 +210,19 @@ export default function AppointmentDetail() {
         {!isCancelled && (
           <div className="app-surface p-5 space-y-3">
             <h2 className="font-semibold text-slate-900 mb-3">Ações</h2>
+            {isScheduled && (
+              <>
+                <Button onClick={handleComplete} disabled={completing} className="w-full">
+                  {completing ? "Concluindo..." : "Concluir Atendimento"}
+                </Button>
+                <Button onClick={handleNoShow} disabled={noShowing} variant="outline" className="w-full">
+                  {noShowing ? "Registrando..." : "Não Compareceu"}
+                </Button>
+                <Button onClick={handleToggleConfirm} disabled={confirming} variant="outline" className="w-full">
+                  {confirming ? "Alterando..." : appt.confirmation_status === "confirmed" ? "Remover Confirmação" : "Confirmar Agendamento"}
+                </Button>
+              </>
+            )}
             <Button onClick={() => setRescheduleOpen(true)} className="w-full">
               <Calendar className="h-4 w-4 mr-2" /> Reagendar
             </Button>
@@ -202,8 +263,8 @@ export default function AppointmentDetail() {
               <label className="block text-sm font-medium text-slate-800 mb-1">Status</label>
               <select {...regPay("status")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
                 <option value="paid">Pago</option>
-                <option value="unpaid">Pendente</option>
-                <option value="partial">Parcial</option>
+                <option value="pending">Pendente</option>
+                <option value="cancelled">Cancelado</option>
               </select>
               <FieldError message={payErrors.status?.message} />
             </div>
@@ -211,10 +272,9 @@ export default function AppointmentDetail() {
               <label className="block text-sm font-medium text-slate-800 mb-1">Método</label>
               <select {...regPay("method")} className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
                 <option value="pix">PIX</option>
-                <option value="credit_card">Cartão de Crédito</option>
-                <option value="debit_card">Cartão de Débito</option>
+                <option value="card">Cartão</option>
                 <option value="cash">Dinheiro</option>
-                <option value="transfer">Transferência</option>
+                <option value="bank_transfer">Transferência</option>
                 <option value="other">Outro</option>
               </select>
               <FieldError message={payErrors.method?.message} />

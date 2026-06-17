@@ -152,6 +152,14 @@ impl IntoResponse for AppError {
 }
 
 #[derive(Serialize)]
+pub struct PaginatedData<T: Serialize> {
+    pub items: Vec<T>,
+    pub total: i64,
+    pub page: i64,
+    pub per_page: i64,
+}
+
+#[derive(Serialize)]
 pub struct ActionResponse<T: Serialize = ()> {
     pub success: bool,
     pub message: String,

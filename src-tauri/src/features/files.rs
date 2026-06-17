@@ -307,6 +307,47 @@ pub async fn list_files_by_appointment(
     Ok(files)
 }
 
+pub async fn delete_file(
+    db: &SqlitePool,
+    user_id: &str,
+    file_id: &str,
+) -> Result<(), AppError> {
+    let file = sqlx::query_as::<_, RecordFile>(
+        r#"SELECT * FROM record_files WHERE id = ? AND user_id = ? AND deleted_at IS NULL"#,
+    )
+    .bind(file_id)
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::internal(format!("DB error: {}", e)))?
+    .ok_or_else(|| AppError::not_found("Arquivo nao encontrado."))?;
+
+    let _ = tokio::fs::remove_file(&file.storage_path).await;
+
+    sqlx::query("UPDATE record_files SET deleted_at = datetime('now') WHERE id = ? AND user_id = ?")
+        .bind(file_id)
+        .bind(user_id)
+        .execute(db)
+        .await
+        .map_err(|e| AppError::internal(format!("DB error: {}", e)))?;
+
+    audit::write_audit_log(
+        db,
+        user_id,
+        "file_delete",
+        "record_file",
+        Some(file_id),
+        Some(&serde_json::json!({
+            "original_name": file.original_name,
+        })),
+        None,
+        None,
+    )
+    .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,9 +51,9 @@ export default function Payments() {
   function openEdit(p: PaymentWithAppointment) {
     setEditPayment(p);
     reset({
-      status: p.status || "paid",
-      method: p.method || "pix",
-      amount_received_cents: p.amount_received_cents || p.session_price_cents,
+      status: (p.status || "paid") as "paid" | "pending" | "cancelled",
+      method: (p.method || "pix") as "pix" | "card" | "cash" | "bank_transfer" | "other",
+      amount_received_cents: (p.amount_received_cents || p.session_price_cents) / 100,
       notes: "",
     });
     setModalOpen(true);
@@ -67,7 +67,7 @@ export default function Payments() {
         status: data.status,
         method: data.method,
         paid_at: data.status === "paid" ? new Date().toISOString() : null,
-        amount_received_cents: data.amount_received_cents,
+        amount_received_cents: Math.round(data.amount_received_cents * 100),
         notes: data.notes || undefined,
       });
       toast("Pagamento salvo.");
@@ -86,7 +86,7 @@ export default function Payments() {
     { key: "starts_at", header: "Horário", render: (p) => formatTime(p.starts_at) },
     { key: "session_price_cents", header: "Valor", render: (p) => formatBRL(p.session_price_cents) },
     { key: "amount_received_cents", header: "Recebido", render: (p) => p.amount_received_cents ? formatBRL(p.amount_received_cents) : "-" },
-    { key: "status", header: "Status", render: (p) => <StatusBadge status={p.status || "unpaid"} /> },
+    { key: "status", header: "Status", render: (p) => <StatusBadge status={p.status || "pending"} /> },
     {
       key: "actions", header: "",
       render: (p) => (
@@ -108,7 +108,7 @@ export default function Payments() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="app-surface p-5"><p className="text-sm text-muted-foreground">Total de Atendimentos</p><p className="text-3xl font-bold text-primary mt-1">{payments.length}</p></div>
+        <div className="app-surface p-5"><p className="text-sm text-muted-foreground">Total do Mês</p><p className="text-3xl font-bold text-primary mt-1">{payments.length}</p></div>
         <div className="app-surface p-5"><p className="text-sm text-muted-foreground">A receber</p><p className="text-3xl font-bold text-yellow-600 mt-1">{formatBRL(summary.pending_cents)}</p></div>
         <div className="app-surface p-5"><p className="text-sm text-muted-foreground">Recebido</p><p className="text-3xl font-bold text-success mt-1">{formatBRL(summary.paid_cents)}</p></div>
       </div>
@@ -129,15 +129,15 @@ export default function Payments() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Select label="Status" {...register("status")} options={[
-                { value: "paid", label: "Pago" }, { value: "unpaid", label: "Pendente" }, { value: "partial", label: "Parcial" },
+                { value: "paid", label: "Pago" }, { value: "pending", label: "Pendente" }, { value: "cancelled", label: "Cancelado" },
               ]} />
               <FieldError message={errors.status?.message} />
             </div>
             <div>
               <Select label="Método" {...register("method")} options={[
-                { value: "pix", label: "PIX" }, { value: "credit_card", label: "Cartão de Crédito" },
-                { value: "debit_card", label: "Cartão de Débito" }, { value: "cash", label: "Dinheiro" },
-                { value: "transfer", label: "Transferência" }, { value: "other", label: "Outro" },
+                { value: "pix", label: "PIX" }, { value: "card", label: "Cartão" },
+                { value: "cash", label: "Dinheiro" },
+                { value: "bank_transfer", label: "Transferência" }, { value: "other", label: "Outro" },
               ]} />
               <FieldError message={errors.method?.message} />
             </div>

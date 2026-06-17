@@ -24,7 +24,7 @@ export default function RescheduleDialog({ open, onClose, appointmentId, current
     if (startsAt >= endsAt) { toast("O fim deve ser após o início.", "error"); return; }
     setSaving(true);
     try {
-      await api.appointments.update(appointmentId, { patient_id: "", starts_at: startsAt, ends_at: endsAt });
+      await api.appointments.update(appointmentId, { starts_at: startsAt, ends_at: endsAt });
       toast("Atendimento reagendado.");
       onRescheduled();
       onClose();

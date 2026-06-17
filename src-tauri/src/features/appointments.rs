@@ -3,8 +3,7 @@ use uuid::Uuid;
 
 use crate::audit;
 use crate::db::models::{
-    AppointmentDetail, CalendarEvent, CreateAppointmentInput,
-    RecordFile,
+    AppointmentDetail, CalendarEvent, CreateAppointmentInput, RecordFile, UpdateAppointmentInput,
 };
 use crate::errors::AppError;
 use crate::features::appointments_recurrence::build_recurring_appointments;
@@ -357,23 +356,29 @@ pub async fn update_appointment(
     db: &SqlitePool,
     user_id: &str,
     appointment_id: &str,
-    input: &CreateAppointmentInput,
+    input: &UpdateAppointmentInput,
 ) -> Result<AppointmentDetail, AppError> {
-    // Verify exists
-    let _existing = get_appointment_detail(db, user_id, appointment_id).await?;
+    let existing = get_appointment_detail(db, user_id, appointment_id).await?;
 
-    if input.starts_at >= input.ends_at {
-        return Err(AppError::bad_request("O fim precisa ser depois do inicio."));
-    }
+    let starts_at = input.starts_at.clone().unwrap_or(existing.starts_at);
+    let ends_at = input.ends_at.clone().unwrap_or(existing.ends_at);
 
-    if find_overlapping(db, user_id, &input.starts_at, &input.ends_at, Some(appointment_id)).await? {
-        return Err(AppError::conflict("Ja existe um agendamento para este horario."));
+    if input.starts_at.is_some() || input.ends_at.is_some() {
+        if starts_at >= ends_at {
+            return Err(AppError::bad_request("O fim precisa ser depois do inicio."));
+        }
+        if find_overlapping(db, user_id, &starts_at, &ends_at, Some(appointment_id)).await? {
+            return Err(AppError::conflict("Ja existe um agendamento para este horario."));
+        }
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let status = input.status.as_deref().unwrap_or("scheduled");
-    let confirmation = input.confirmation_status.as_deref().unwrap_or("unconfirmed");
-    let price = input.session_price_cents.unwrap_or(0);
+    let patient_id = input.patient_id.clone().unwrap_or(existing.patient_id);
+    let status = input.status.as_deref().unwrap_or(&existing.status);
+    let confirmation = input.confirmation_status.as_deref().unwrap_or(&existing.confirmation_status);
+    let price = input.session_price_cents.unwrap_or(existing.session_price_cents);
+    let quick_notes = input.quick_notes.clone().or(existing.quick_notes);
+    let cancel_reason = input.cancel_reason.clone().or(existing.cancel_reason);
 
     sqlx::query(
         r#"UPDATE appointments SET patient_id = ?, starts_at = ?, ends_at = ?, status = ?,
@@ -381,14 +386,14 @@ pub async fn update_appointment(
             updated_at = ?
         WHERE id = ? AND user_id = ? AND deleted_at IS NULL"#,
     )
-    .bind(&input.patient_id)
-    .bind(&input.starts_at)
-    .bind(&input.ends_at)
+    .bind(&patient_id)
+    .bind(&starts_at)
+    .bind(&ends_at)
     .bind(status)
     .bind(confirmation)
     .bind(price)
-    .bind(&input.quick_notes)
-    .bind(&input.cancel_reason)
+    .bind(&quick_notes)
+    .bind(&cancel_reason)
     .bind(&now)
     .bind(appointment_id)
     .bind(user_id)
@@ -549,5 +554,85 @@ mod tests {
         assert_eq!(appointment.patient_id, patient_id);
         assert_eq!(appointment.starts_at, "2026-06-15T09:00:00");
         assert!(appointment.series_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn updating_appointment_partial_status_only() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-partial-update";
+        let patient_id = "patient-partial-update";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let input = CreateAppointmentInput {
+            patient_id: patient_id.into(),
+            starts_at: "2026-06-15T09:00:00".into(),
+            ends_at: "2026-06-15T10:00:00".into(),
+            status: None,
+            confirmation_status: None,
+            session_price_cents: Some(20000),
+            quick_notes: Some("nota original".into()),
+            cancel_reason: None,
+            recurrence_frequency: None,
+            recurrence_end_mode: None,
+            recurrence_until_date: None,
+            recurrence_occurrences: None,
+        };
+
+        let appointment = create_appointment(&db, user_id, &input).await.unwrap();
+
+        let update = UpdateAppointmentInput {
+            patient_id: None,
+            starts_at: None,
+            ends_at: None,
+            status: Some("completed".into()),
+            confirmation_status: None,
+            session_price_cents: None,
+            quick_notes: None,
+            cancel_reason: None,
+        };
+
+        let updated = update_appointment(&db, user_id, &appointment.id, &update).await.unwrap();
+
+        assert_eq!(updated.status, "completed");
+        assert_eq!(updated.quick_notes, Some("nota original".into()));
+        assert_eq!(updated.session_price_cents, 20000);
+    }
+
+    #[tokio::test]
+    async fn update_appointment_preserves_patient_id_when_not_sent() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-preserve-patient";
+        let patient_id = "patient-preserve";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let created = create_appointment(&db, user_id, &CreateAppointmentInput {
+            patient_id: patient_id.into(),
+            starts_at: "2026-06-15T09:00:00".into(),
+            ends_at: "2026-06-15T10:00:00".into(),
+            status: None,
+            confirmation_status: None,
+            session_price_cents: Some(10000),
+            quick_notes: None,
+            cancel_reason: None,
+            recurrence_frequency: None,
+            recurrence_end_mode: None,
+            recurrence_until_date: None,
+            recurrence_occurrences: None,
+        }).await.unwrap();
+
+        let updated = update_appointment(&db, user_id, &created.id, &UpdateAppointmentInput {
+            patient_id: None,
+            starts_at: Some("2026-06-15T14:00:00".into()),
+            ends_at: Some("2026-06-15T15:00:00".into()),
+            status: None,
+            confirmation_status: None,
+            session_price_cents: None,
+            quick_notes: None,
+            cancel_reason: None,
+        }).await.unwrap();
+
+        assert_eq!(updated.patient_id, patient_id);
+        assert_eq!(updated.starts_at, "2026-06-15T14:00:00");
+        assert_eq!(updated.ends_at, "2026-06-15T15:00:00");
     }
 }

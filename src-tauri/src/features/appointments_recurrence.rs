@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use chrono::Datelike;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecurringAppointment {
@@ -14,7 +15,6 @@ pub fn build_recurring_appointments(
     until_date: Option<&str>,
     occurrences: Option<i32>,
 ) -> Vec<RecurringAppointment> {
-    let interval_days = if frequency == "biweekly" { 14 } else { 7 };
     let hard_limit = occurrences
         .map(|o| o.max(2).min(52))
         .unwrap_or(52)
@@ -49,9 +49,14 @@ pub fn build_recurring_appointments(
     let mut index = 0;
 
     while results.len() < hard_limit {
-        let next_start = start_dt
-            .checked_add_signed(chrono::Duration::days(interval_days * index))
-            .unwrap_or(start_dt);
+        let next_start = if frequency == "monthly" {
+            add_months(start_dt, index)
+        } else {
+            let interval_days = if frequency == "biweekly" { 14 } else { 7 };
+            start_dt
+                .checked_add_signed(chrono::Duration::days(interval_days as i64 * index as i64))
+                .unwrap_or(start_dt)
+        };
         let next_end = next_start + duration;
 
         if let Some(boundary) = until_boundary {
@@ -79,9 +84,36 @@ pub fn build_recurring_appointments(
     results
 }
 
+fn add_months(dt: chrono::NaiveDateTime, months: i32) -> chrono::NaiveDateTime {
+    let total_months = dt.month() as i32 - 1 + months;
+    let new_year = dt.year() + total_months / 12;
+    let new_month = ((total_months % 12) + 1) as u32;
+    let max_day = num_days_in_month(new_year, new_month);
+    let new_day = dt.day().min(max_day);
+    let new_date = chrono::NaiveDate::from_ymd_opt(new_year, new_month, new_day)
+        .unwrap_or(dt.date());
+    chrono::NaiveDateTime::new(new_date, dt.time())
+}
+
+fn num_days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
 pub fn get_series_label(frequency: &str) -> &str {
     match frequency {
         "biweekly" => "Quinzenal",
+        "monthly" => "Mensal",
         _ => "Semanal",
     }
 }
@@ -180,12 +212,42 @@ mod tests {
     #[test]
     fn test_recurrence_min_2() {
         let results = build_recurring_appointments(
-            "2024-01-01T09:00:00",
-            "2024-01-01T10:00:00",
+            "2024-01-08T09:00:00",
+            "2024-01-08T10:00:00",
             "weekly",
             None,
             Some(2),
         );
         assert!(results.len() >= 2);
+    }
+
+    #[test]
+    fn test_build_recurring_monthly() {
+        let results = build_recurring_appointments(
+            "2024-01-15T09:00:00",
+            "2024-01-15T10:00:00",
+            "monthly",
+            None,
+            Some(3),
+        );
+        assert_eq!(results.len(), 3);
+        assert_eq!(&results[0].starts_at[..10], "2024-01-15");
+        assert_eq!(&results[1].starts_at[..10], "2024-02-15");
+        assert_eq!(&results[2].starts_at[..10], "2024-03-15");
+    }
+
+    #[test]
+    fn test_recurrence_monthly_until_date() {
+        let results = build_recurring_appointments(
+            "2024-01-31T09:00:00",
+            "2024-01-31T10:00:00",
+            "monthly",
+            Some("2024-04-01"),
+            None,
+        );
+        assert_eq!(results.len(), 3);
+        // Jan 31, Feb 29 (2024 leap), Mar 31
+        assert_eq!(&results[1].starts_at[..10], "2024-02-29");
+        assert_eq!(&results[2].starts_at[..10], "2024-03-31");
     }
 }

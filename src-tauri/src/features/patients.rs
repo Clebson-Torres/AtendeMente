@@ -6,7 +6,7 @@ use crate::crypto;
 use crate::db::models::{
     CreatePatientInput, Patient, PatientListItem, PatientPii, PatientRow, UpdatePatientInput,
 };
-use crate::errors::AppError;
+use crate::errors::{AppError, PaginatedData};
 use crate::utils;
 
 // ─── PII helpers ─────────────────────────────────────────────────────────────────
@@ -174,21 +174,55 @@ pub async fn list_patients(
     db: &SqlitePool,
     user_id: &str,
     search: &str,
-) -> Result<Vec<PatientListItem>, AppError> {
-    let rows = if search.trim().is_empty() {
-        sqlx::query_as::<_, PatientRow>(
-            r#"SELECT * FROM patients
-            WHERE user_id = ? AND deleted_at IS NULL
-            ORDER BY full_name"#,
+    page: i64,
+    per_page: i64,
+) -> Result<PaginatedData<PatientListItem>, AppError> {
+    let offset = (page - 1) * per_page;
+    let (rows, total) = if search.trim().is_empty() {
+        let total: (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL"#,
         )
         .bind(user_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
+
+        let rows = sqlx::query_as::<_, PatientRow>(
+            r#"SELECT * FROM patients
+            WHERE user_id = ? AND deleted_at IS NULL
+            ORDER BY full_name
+            LIMIT ? OFFSET ?"#,
+        )
+        .bind(user_id)
+        .bind(per_page)
+        .bind(offset)
         .fetch_all(db)
         .await
-        .map_err(|e| AppError::internal(format!("Failed to list patients: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to list patients: {}", e)))?;
+
+        (rows, total.0)
     } else {
         let (name_pattern, token_pattern) = search_where_clause(search);
 
-        sqlx::query_as::<_, PatientRow>(
+        let total: (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*) FROM patients
+            WHERE user_id = ? AND deleted_at IS NULL
+            AND (
+                full_name LIKE ?
+                OR id IN (
+                    SELECT patient_id FROM patient_search_tokens
+                    WHERE token_text LIKE ?
+                )
+            )"#,
+        )
+        .bind(user_id)
+        .bind(&name_pattern)
+        .bind(&token_pattern)
+        .fetch_one(db)
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
+
+        let rows = sqlx::query_as::<_, PatientRow>(
             r#"SELECT * FROM patients
             WHERE user_id = ? AND deleted_at IS NULL
             AND (
@@ -198,19 +232,31 @@ pub async fn list_patients(
                     WHERE token_text LIKE ?
                 )
             )
-            ORDER BY full_name"#,
+            ORDER BY full_name
+            LIMIT ? OFFSET ?"#,
         )
         .bind(user_id)
         .bind(&name_pattern)
         .bind(&token_pattern)
+        .bind(per_page)
+        .bind(offset)
         .fetch_all(db)
         .await
-        .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?;
+
+        (rows, total.0)
     };
 
-    rows.into_iter()
+    let items = rows.into_iter()
         .map(|row| row_to_patient_list_item(row, user_id))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(PaginatedData {
+        items,
+        total,
+        page,
+        per_page,
+    })
 }
 
 pub async fn get_patient_detail(
