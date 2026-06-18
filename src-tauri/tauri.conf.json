@@ -30,8 +30,13 @@
     "targets": "all",
     "icon": [
       "icons/icon.icns",
-      "icons/icon.ico",     
-      "icons/icon.png"       
-    ]
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": null,
+      "timestampUrl": null
+    }
   }
 }
