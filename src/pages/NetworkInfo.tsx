@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { Smartphone, Wifi, Copy, Check } from "lucide-react";
 import { toast } from "../components/ui/Toast";
 import Skeleton from "../components/ui/Skeleton";
+import { API } from "../lib/api-base";
 
 interface NetworkInfo {
   ipv4: string[];
@@ -17,7 +18,7 @@ export default function NetworkInfoPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    fetch("/api/network-info")
+    fetch(`${API}/network-info`)
       .then((r) => r.json())
       .then((json) => {
         setInfo(json.data);
