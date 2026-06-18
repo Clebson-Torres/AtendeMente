@@ -1,12 +1,14 @@
 import { cn } from "../../lib/utils";
-import type { ReactNode } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 
 export interface Column<T> {
   key: string;
   header: string;
   render?: (item: T) => ReactNode;
   className?: string;
+  sortable?: boolean;
+  sortKey?: string;
 }
 
 interface Props<T> {
@@ -22,6 +24,27 @@ interface Props<T> {
 }
 
 export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, emptyMessage, page, total, perPage, onPageChange }: Props<T>) {
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  function handleSort(key: string) {
+    if (sortColumn === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(key);
+      setSortDir("asc");
+    }
+  }
+
+  const sorted = [...data].sort((a, b) => {
+    if (!sortColumn) return 0;
+    const aVal = (a as any)[sortColumn];
+    const bVal = (b as any)[sortColumn];
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+    const cmp = typeof aVal === "string" ? aVal.localeCompare(bVal) : aVal - bVal;
+    return sortDir === "asc" ? cmp : -cmp;
+  });
   if (data.length === 0) {
     return (
       <div className="text-center py-12 text-muted-foreground text-sm">
@@ -52,14 +75,28 @@ export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, 
           <thead>
             <tr className="border-b border-border">
               {columns.map((col) => (
-                <th key={col.key} className={cn("text-left px-4 py-3 font-medium text-muted-foreground", col.className)}>
-                  {col.header}
+                <th key={col.key}
+                  className={cn(
+                    "text-left px-4 py-3 font-medium text-muted-foreground",
+                    col.sortable && "cursor-pointer select-none hover:text-foreground transition-colors",
+                    col.className,
+                  )}
+                  onClick={() => col.sortable && handleSort(col.sortKey || col.key)}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    {col.header}
+                    {col.sortable && (
+                      sortColumn === (col.sortKey || col.key)
+                        ? (sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />)
+                        : <ArrowUpDown className="h-3 w-3 opacity-40" />
+                    )}
+                  </span>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {data.map((item) => (
+            {sorted.map((item) => (
               <tr
                 key={keyExtractor(item)}
                 onClick={() => onRowClick?.(item)}

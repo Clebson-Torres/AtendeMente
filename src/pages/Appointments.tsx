@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { api, type CalendarEvent, type CreateAppointmentInput, type PatientListItem } from "../lib/api";
@@ -21,6 +21,7 @@ const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julh
 
 export default function Appointments() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const today = useMemo(() => new Date(), []);
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -81,6 +82,23 @@ export default function Appointments() {
   }
 
   useEffect(() => { loadEvents(); }, [year, month]);
+
+  useEffect(() => {
+    const patientId = searchParams.get("patientId");
+    if (patientId) {
+      const d = new Date();
+      d.setMinutes(0, 0, 0);
+      reset({
+        patient_id: patientId,
+        starts_at: d.toISOString().slice(0, 16),
+        ends_at: new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16),
+        session_price_cents: 0,
+      });
+      setRecurrenceEnabled(false);
+      setModalOpen(true);
+      setSearchParams({});
+    }
+  }, [searchParams]);
 
   const filteredEvents = useMemo(() => {
     return events.filter((e) => {

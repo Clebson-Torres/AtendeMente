@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type DashboardData } from "../lib/api";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, UsersRound, TrendingUp } from "lucide-react";
 import { formatBRL } from "../lib/format";
 import { CardSkeleton, DetailSkeleton } from "../components/ui/Skeleton";
 import Skeleton from "../components/ui/Skeleton";
+import ExportPdfButton from "../components/ExportPdfButton";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line,
 } from "recharts";
@@ -14,6 +15,7 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [finSummary, setFinSummary] = useState({ paid_cents: 0, pending_cents: 0 });
   const [error, setError] = useState("");
+  const dashboardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     Promise.all([
@@ -53,8 +55,11 @@ export default function Dashboard() {
   }));
 
   return (
-    <div className="p-4 sm:p-6 space-y-6">
-      <h1 className="text-2xl font-display font-semibold text-slate-900">Visão geral</h1>
+    <div ref={dashboardRef} className="p-4 sm:p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-display font-semibold text-slate-900">Visão geral</h1>
+        <ExportPdfButton targetRef={dashboardRef} filename="dashboard-atendemente.pdf" />
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="app-surface p-5">

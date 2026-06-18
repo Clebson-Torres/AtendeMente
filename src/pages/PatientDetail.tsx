@@ -73,9 +73,14 @@ export default function PatientDetail() {
                 </div>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
-              <Download className="h-4 w-4 mr-2" />{exporting ? "Exportando..." : "Exportar ZIP"}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => navigate(`/appointments?patientId=${id}`)}>
+                <Calendar className="h-4 w-4 mr-2" />Agendar
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+                <Download className="h-4 w-4 mr-2" />{exporting ? "Exportando..." : "Exportar ZIP"}
+              </Button>
+            </div>
           </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
