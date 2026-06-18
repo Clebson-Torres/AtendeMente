@@ -1,4 +1,4 @@
-const API = "http://localhost:3001/api";
+import { API } from "./api-base";
 
 // ─── State ───────────────────────────────────────────────────────────────
 
