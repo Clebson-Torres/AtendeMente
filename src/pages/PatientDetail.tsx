@@ -4,6 +4,8 @@ import { api, type Patient, type CalendarEvent } from "../lib/api";
 import Button from "../components/ui/Button";
 import StatusBadge from "../components/ui/StatusBadge";
 import { formatDate, formatTime } from "../lib/format";
+import { downloadFile } from "../lib/utils";
+import { DetailSkeleton } from "../components/ui/Skeleton";
 import { ArrowLeft, User, Phone, Calendar, FileText, Download } from "lucide-react";
 
 export default function PatientDetail() {
@@ -36,14 +38,7 @@ export default function PatientDetail() {
     try {
       const blob = await api.exports.patient(id);
       if (blob) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        await downloadFile(blob, `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`);
       }
     } catch (e: any) {
       setError(e.message || "Erro ao exportar");
@@ -52,7 +47,7 @@ export default function PatientDetail() {
     }
   }
 
-  if (loading) return <div className="p-6 text-muted-foreground">Carregando...</div>;
+  if (loading) return <div className="p-6"><DetailSkeleton /></div>;
   if (error) return <div className="p-6 text-destructive">{error}</div>;
   if (!patient) return <div className="p-6 text-muted-foreground">Paciente não encontrado.</div>;
 

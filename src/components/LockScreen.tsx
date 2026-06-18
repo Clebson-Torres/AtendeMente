@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { unlock } from "../lib/auth";
+import Input from "./ui/Input";
+import Button from "./ui/Button";
+import { Lock } from "lucide-react";
 
 interface Props {
   onUnlock: () => void;
@@ -25,26 +28,26 @@ export default function LockScreen({ onUnlock }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-br from-teal-600 to-teal-800">
-      <form onSubmit={handleUnlock} className="bg-white rounded-xl shadow-2xl p-8 w-80 space-y-4">
-        <h1 className="text-xl font-bold text-center text-gray-800">Tela Bloqueada</h1>
-        <p className="text-sm text-gray-500 text-center">Digite sua senha para desbloquear</p>
-        <input
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: "hsl(var(--primary))" }}>
+      <form onSubmit={handleUnlock} className="bg-white rounded-3xl shadow-2xl p-8 w-80 space-y-5 app-surface">
+        <div className="text-center space-y-2">
+          <div className="mx-auto h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+            <Lock className="h-6 w-6 text-primary" />
+          </div>
+          <h1 className="text-xl font-display font-semibold text-slate-900">Tela Bloqueada</h1>
+          <p className="text-sm text-muted-foreground">Digite sua senha para desbloquear</p>
+        </div>
+        <Input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Senha"
           autoFocus
-          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
         />
-        {error && <p className="text-red-500 text-sm">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading || !password}
-          className="inline-flex items-center justify-center font-medium transition-colors disabled:opacity-50 h-10 rounded-xl px-4 text-sm bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm w-full"
-        >
+        {error && <p className="text-destructive text-sm">{error}</p>}
+        <Button type="submit" disabled={loading || !password} className="w-full">
           {loading ? "Desbloqueando..." : "Desbloquear"}
-        </button>
+        </Button>
       </form>
     </div>
   );

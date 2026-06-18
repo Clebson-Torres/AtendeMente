@@ -15,7 +15,9 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { patientSchema, type PatientInput } from "../lib/schemas";
 import { formatDate } from "../lib/format";
-import { Upload, UsersRound, Plus, Search, FileSpreadsheet } from "lucide-react";
+import { downloadFile } from "../lib/utils";
+import { TableSkeleton } from "../components/ui/Skeleton";
+import { Upload, UsersRound, Plus, Search, FileSpreadsheet, Download } from "lucide-react";
 import ImportPatientsModal from "../components/ImportPatientsModal";
 
 export default function Patients() {
@@ -25,6 +27,7 @@ export default function Patients() {
   const [page, setPage] = useState(1);
   const [perPage] = useState(50);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -39,15 +42,14 @@ export default function Patients() {
   const [saving, setSaving] = useState(false);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<() => void>(() => {});
-  const [confirmTitle, setConfirmTitle] = useState("");
+  const [confirmTarget, setConfirmTarget] = useState<{ id: string; action: "activate" | "deactivate"; name: string } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
-  async function load(searchTerm = "", p = 1) {
+  async function load(searchTerm = "", p = 1, status = statusFilter) {
     setLoading(true);
     setError("");
     try {
-      const result = await api.patients.list(searchTerm || undefined, p, perPage);
+      const result = await api.patients.list(searchTerm || undefined, p, perPage, status || undefined);
       setPatients(result.items);
       setTotal(result.total);
       setPage(result.page);
@@ -59,6 +61,27 @@ export default function Patients() {
   }
 
   useEffect(() => { load(); }, []);
+
+  function handleSearchChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setSearch(e.target.value);
+    load(e.target.value, 1, statusFilter);
+  }
+
+  function handleStatusFilterChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const val = e.target.value;
+    setStatusFilter(val);
+    load(search, 1, val);
+  }
+
+  async function handleExportCsv() {
+    try {
+      const blob = await api.exports.patientsCsv();
+      await downloadFile(blob, "pacientes.csv");
+      toast("CSV exportado.");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  }
 
   function openCreate() {
     setEditId(null);
@@ -107,21 +130,31 @@ export default function Patients() {
   }
 
   function confirmDeactivate(p: PatientListItem) {
-    setConfirmTitle(`Desativar ${p.full_name}?`);
-    setConfirmAction(() => async () => {
-      try { await api.patients.deactivate(p.id); toast("Paciente desativado."); load(search); }
-      catch (e: any) { toast(e.message, "error"); }
-    });
+    setConfirmTarget({ id: p.id, action: "deactivate", name: p.full_name });
     setConfirmOpen(true);
   }
 
   function confirmActivate(p: PatientListItem) {
-    setConfirmTitle(`Reativar ${p.full_name}?`);
-    setConfirmAction(() => async () => {
-      try { await api.patients.activate(p.id); toast("Paciente reativado."); load(search); }
-      catch (e: any) { toast(e.message, "error"); }
-    });
+    setConfirmTarget({ id: p.id, action: "activate", name: p.full_name });
     setConfirmOpen(true);
+  }
+
+  async function handleConfirm() {
+    if (!confirmTarget) return;
+    try {
+      if (confirmTarget.action === "deactivate") {
+        await api.patients.deactivate(confirmTarget.id);
+        toast("Paciente desativado.");
+      } else {
+        await api.patients.activate(confirmTarget.id);
+        toast("Paciente reativado.");
+      }
+      load(search);
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+    setConfirmOpen(false);
+    setConfirmTarget(null);
   }
 
   const columns: Column<PatientListItem>[] = [
@@ -152,6 +185,9 @@ export default function Patients() {
           <h1 className="text-2xl font-display font-semibold text-slate-900">Pacientes</h1>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={handleExportCsv}>
+            <Download className="h-4 w-4 mr-2" />Exportar CSV
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <FileSpreadsheet className="h-4 w-4 mr-2" />Importar CSV
           </Button>
@@ -159,15 +195,23 @@ export default function Patients() {
         </div>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Buscar por nome, telefone ou email..." value={search} onChange={(e) => { setSearch(e.target.value); load(e.target.value, 1); }} className="pl-10" />
+      <div className="flex gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder="Buscar por nome, telefone ou email..." value={search} onChange={handleSearchChange} className="pl-10" />
+        </div>
+        <select value={statusFilter} onChange={handleStatusFilterChange} aria-label="Filtrar por status"
+          className="h-10 rounded-xl border border-input bg-background px-3 text-sm text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30">
+          <option value="">Todos</option>
+          <option value="active">Ativos</option>
+          <option value="inactive">Inativos</option>
+        </select>
       </div>
 
       {error && <p className="text-destructive text-sm">{error}</p>}
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Carregando...</div>
+        <div className="app-surface p-5"><TableSkeleton rows={6} cols={5} /></div>
       ) : (
         <div className="app-surface overflow-hidden">
           <DataTable
@@ -217,7 +261,10 @@ export default function Patients() {
         </form>
       </Modal>
 
-      <ConfirmDialog open={confirmOpen} onClose={() => setConfirmOpen(false)} onConfirm={confirmAction} title={confirmTitle} message="Essa ação pode ser revertida depois." confirmLabel="Confirmar" />
+      <ConfirmDialog open={confirmOpen} onClose={() => { setConfirmOpen(false); setConfirmTarget(null); }} onConfirm={handleConfirm}
+        title={confirmTarget ? `${confirmTarget.action === "deactivate" ? "Desativar" : "Reativar"} ${confirmTarget.name}?` : ""}
+        message={confirmTarget?.action === "deactivate" ? "O paciente não aparecerá nas buscas padrão, mas poderá ser reativado depois." : "O paciente voltará a aparecer nas buscas e poderá agendar novos atendimentos."}
+        confirmLabel={confirmTarget?.action === "deactivate" ? "Desativar" : "Reativar"} destructive={confirmTarget?.action === "deactivate"} />
       <ImportPatientsModal open={importOpen} onClose={() => setImportOpen(false)} onImported={() => load(search, 1)} />
     </div>
   );

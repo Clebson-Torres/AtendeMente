@@ -489,6 +489,60 @@ pub async fn cancel_recurring_series(
     Ok(())
 }
 
+pub async fn export_appointments_csv(
+    db: &SqlitePool,
+    user_id: &str,
+    month: Option<u32>,
+    year: Option<i32>,
+) -> Result<String, AppError> {
+    let now = chrono::Utc::now();
+    let m = month.unwrap_or_else(|| now.format("%m").to_string().parse::<u32>().unwrap_or(1));
+    let y = year.unwrap_or_else(|| now.format("%Y").to_string().parse::<i32>().unwrap_or(2026));
+    let month_start = format!("{}-{:02}-01T00:00:00", y, m);
+    let next_month = if m == 12 {
+        format!("{}-01-01T00:00:00", y + 1)
+    } else {
+        format!("{}-{:02}-01T00:00:00", y, m + 1)
+    };
+
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, i64, String)>(
+        r#"SELECT a.id, p.full_name, a.starts_at, a.ends_at, a.status, a.confirmation_status, a.session_price_cents, a.created_at
+        FROM appointments a
+        INNER JOIN patients p ON p.id = a.patient_id
+        WHERE a.user_id = ? AND a.deleted_at IS NULL AND a.status != 'cancelled'
+        AND a.starts_at >= ? AND a.starts_at < ?
+        ORDER BY a.starts_at"#,
+    )
+    .bind(user_id)
+    .bind(&month_start)
+    .bind(&next_month)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Failed to export appointments: {}", e)))?;
+
+    let mut csv = String::from("Paciente,Início,Fim,Status,Confirmação,Valor\n");
+    for r in rows {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            escape_csv(&r.1),
+            r.2,
+            r.3,
+            r.4,
+            r.5,
+            r.6,
+        ));
+    }
+    Ok(csv)
+}
+
+fn escape_csv(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

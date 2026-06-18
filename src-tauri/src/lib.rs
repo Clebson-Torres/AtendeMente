@@ -14,11 +14,11 @@ pub mod utils;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::{extract::DefaultBodyLimit, http::HeaderValue, middleware as axum_middleware, Router};
+use axum::{extract::DefaultBodyLimit, middleware as axum_middleware, Router};
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::errors::AppError;
@@ -87,7 +87,7 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
-                .allow_origin("http://localhost:1420".parse::<HeaderValue>().unwrap())
+                .allow_origin(Any)
                 .allow_methods([
                     axum::http::Method::GET,
                     axum::http::Method::POST,

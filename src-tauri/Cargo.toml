@@ -1,6 +1,6 @@
 [package]
 name = "atendemente"
-version = "1.0.7"
+version = "1.0.9"
 description = "AtendeMente - Gestão para psicólogos autônomos"
 authors = ["Clebson Torres"]
 edition = "2021"

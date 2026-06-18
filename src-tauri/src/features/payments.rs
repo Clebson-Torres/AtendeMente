@@ -99,23 +99,26 @@ pub async fn upsert_payment(
     .map_err(|e| AppError::internal(format!("Failed to fetch payment: {}", e)))
 }
 
+fn month_bounds(month: Option<u32>, year: Option<i32>) -> (String, String) {
+    let now = chrono::Utc::now();
+    let m = month.unwrap_or_else(|| now.format("%m").to_string().parse::<u32>().unwrap_or(1));
+    let y = year.unwrap_or_else(|| now.format("%Y").to_string().parse::<i32>().unwrap_or(2026));
+    let month_start = format!("{}-{:02}-01T00:00:00", y, m);
+    let next_month = if m == 12 {
+        format!("{}-01-01T00:00:00", y + 1)
+    } else {
+        format!("{}-{:02}-01T00:00:00", y, m + 1)
+    };
+    (month_start, next_month)
+}
+
 pub async fn get_financial_summary(
     db: &SqlitePool,
     user_id: &str,
+    month: Option<u32>,
+    year: Option<i32>,
 ) -> Result<(i64, i64), AppError> {
-    let now = chrono::Utc::now();
-    let year = now.format("%Y").to_string();
-    let month = now.format("%m").to_string();
-    let month_num: u32 = month.parse().unwrap_or(1);
-
-    let month_start = format!("{}-{:02}-01T00:00:00", year, month_num);
-
-    let next_month = if month_num == 12 {
-        let next_year: u32 = year.parse::<u32>().unwrap_or(2024) + 1;
-        format!("{}-01-01T00:00:00", next_year)
-    } else {
-        format!("{}-{:02}-01T00:00:00", year, month_num + 1)
-    };
+    let (month_start, next_month) = month_bounds(month, year);
 
     let summary = sqlx::query_as::<_, (i64, i64)>(
         r#"
@@ -142,18 +145,10 @@ pub async fn get_financial_summary(
 pub async fn list_payments(
     db: &SqlitePool,
     user_id: &str,
+    month: Option<u32>,
+    year: Option<i32>,
 ) -> Result<Vec<PaymentWithAppointment>, AppError> {
-    let now = chrono::Utc::now();
-    let year = now.format("%Y").to_string();
-    let month = now.format("%m").to_string();
-    let month_num: u32 = month.parse().unwrap_or(1);
-    let month_start = format!("{}-{:02}-01T00:00:00", year, month_num);
-    let next_month = if month_num == 12 {
-        let next_year: u32 = year.parse::<u32>().unwrap_or(2024) + 1;
-        format!("{}-01-01T00:00:00", next_year)
-    } else {
-        format!("{}-{:02}-01T00:00:00", year, month_num + 1)
-    };
+    let (month_start, next_month) = month_bounds(month, year);
 
     let rows = sqlx::query_as::<_, (Option<String>, String, String, Option<String>, Option<String>, Option<i64>, Option<String>, String, String, i64)>(
         r#"
@@ -234,6 +229,48 @@ pub async fn list_pending_payments(
         .collect())
 }
 
+pub async fn export_payments_csv(
+    db: &SqlitePool,
+    user_id: &str,
+    month: Option<u32>,
+    year: Option<i32>,
+) -> Result<String, AppError> {
+    let (month_start, next_month) = month_bounds(month, year);
+    let rows = sqlx::query_as::<_, (Option<String>, String, String, Option<String>, Option<String>, Option<i64>, Option<String>, String, String, i64)>(
+        r#"
+        SELECT
+            pay.id, a.id, a.status, pay.status, pay.method,
+            pay.amount_received_cents, pay.paid_at,
+            p.full_name, a.starts_at, a.session_price_cents
+        FROM appointments a
+        LEFT JOIN payments pay ON pay.appointment_id = a.id AND pay.deleted_at IS NULL
+        INNER JOIN patients p ON p.id = a.patient_id
+        WHERE a.user_id = ? AND a.deleted_at IS NULL AND a.status != 'cancelled'
+        AND a.starts_at >= ? AND a.starts_at < ?
+        ORDER BY a.starts_at DESC
+        "#,
+    )
+    .bind(user_id)
+    .bind(&month_start)
+    .bind(&next_month)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Failed to export payments CSV: {}", e)))?;
+
+    let mut csv = String::from("Paciente,Data,Horário,Valor,Recebido,Status,Método\n");
+    for r in &rows {
+        let status = r.3.as_deref().unwrap_or("pending");
+        let method = r.4.as_deref().unwrap_or("other");
+        let date = if r.8.len() >= 10 { &r.8[..10] } else { &r.8 };
+        let time = if r.8.len() >= 16 { &r.8[11..16] } else { "" };
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            r.7, date, time, r.9, r.5.unwrap_or(0), status, method,
+        ));
+    }
+    Ok(csv)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,7 +331,7 @@ mod tests {
         let patient_id = "patient-summary-zeros";
         seed_user_and_patient(&db, user_id, patient_id).await;
 
-        let (paid, pending) = get_financial_summary(&db, user_id).await.unwrap();
+        let (paid, pending) = get_financial_summary(&db, user_id, None, None).await.unwrap();
         assert_eq!(paid, 0);
         assert_eq!(pending, 0);
     }
@@ -326,7 +363,7 @@ mod tests {
         };
         crate::features::appointments::update_appointment(&db, user_id, &appt2.id, &update2).await.unwrap();
 
-        let (paid, pending) = get_financial_summary(&db, user_id).await.unwrap();
+        let (paid, pending) = get_financial_summary(&db, user_id, None, None).await.unwrap();
         assert_eq!(paid, 5000);
         assert_eq!(pending, 5000);
     }
@@ -353,7 +390,7 @@ mod tests {
             create_payment(&db, user_id, &appt.id, "paid", 5000).await;
         }
 
-        let (paid, pending) = get_financial_summary(&db, user_id).await.unwrap();
+        let (paid, pending) = get_financial_summary(&db, user_id, None, None).await.unwrap();
         assert_eq!(paid, 5000);
         assert_eq!(pending, 0);
     }
@@ -370,7 +407,50 @@ mod tests {
         create_test_appointment(&db, user_id, patient_id,
             "2026-05-15T09:00:00", "2026-05-15T10:00:00").await;
 
-        let payments = list_payments(&db, user_id).await.unwrap();
+        let payments = list_payments(&db, user_id, None, None).await.unwrap();
         assert_eq!(payments.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_payments_custom_month() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-custom-month";
+        let patient_id = "patient-custom-month";
+        seed_user_and_patient(&db, user_id, patient_id).await;
+
+        create_test_appointment(&db, user_id, patient_id,
+            "2026-06-10T09:00:00", "2026-06-10T10:00:00").await;
+        create_test_appointment(&db, user_id, patient_id,
+            "2026-05-15T09:00:00", "2026-05-15T10:00:00").await;
+
+        let payments_may = list_payments(&db, user_id, Some(5), Some(2026)).await.unwrap();
+        assert_eq!(payments_may.len(), 1);
+
+        let payments_jun = list_payments(&db, user_id, Some(6), Some(2026)).await.unwrap();
+        assert_eq!(payments_jun.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn financial_summary_custom_month() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-summary-custom";
+        let patient_id = "patient-summary-custom";
+        seed_user_and_patient(&db, user_id, patient_id).await;
+
+        let appt = create_test_appointment(&db, user_id, patient_id,
+            "2026-05-10T09:00:00", "2026-05-10T10:00:00").await;
+        let update = crate::db::models::UpdateAppointmentInput {
+            patient_id: None, starts_at: None, ends_at: None,
+            status: Some("completed".into()), confirmation_status: None,
+            session_price_cents: None, quick_notes: None, cancel_reason: None,
+        };
+        crate::features::appointments::update_appointment(&db, user_id, &appt.id, &update).await.unwrap();
+        create_payment(&db, user_id, &appt.id, "paid", 3000).await;
+
+        let (paid_may, _) = get_financial_summary(&db, user_id, Some(5), Some(2026)).await.unwrap();
+        assert_eq!(paid_may, 3000);
+
+        let (paid_jun, _) = get_financial_summary(&db, user_id, Some(6), Some(2026)).await.unwrap();
+        assert_eq!(paid_jun, 0);
     }
 }

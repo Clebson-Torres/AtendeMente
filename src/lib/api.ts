@@ -48,8 +48,8 @@ export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
 
   patients: {
-    list: (search?: string, page = 1, perPage = 50) =>
-      request<PaginatedResult<PatientListItem>>(`/patients?search=${search ?? ""}&page=${page}&per_page=${perPage}`),
+    list: (search?: string, page = 1, perPage = 50, status?: string) =>
+      request<PaginatedResult<PatientListItem>>(`/patients?search=${search ?? ""}&page=${page}&per_page=${perPage}${status ? `&status=${status}` : ""}`),
     get: (id: string) => request<Patient>(`/patients/${id}`),
     create: (data: CreatePatientInput) =>
       request<Patient>("/patients", {
@@ -108,10 +108,23 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    list: () => request<PaymentWithAppointment[]>("/payments"),
+    list: (month?: number, year?: number) => {
+      let query = "/payments";
+      const params: string[] = [];
+      if (month !== undefined) params.push(`month=${month}`);
+      if (year !== undefined) params.push(`year=${year}`);
+      if (params.length) query += "?" + params.join("&");
+      return request<PaymentWithAppointment[]>(query);
+    },
     pending: () => request<PaymentWithAppointment[]>("/payments/pending"),
-    summary: () =>
-      request<FinancialSummary>("/payments/summary"),
+    summary: (month?: number, year?: number) => {
+      let query = "/payments/summary";
+      const params: string[] = [];
+      if (month !== undefined) params.push(`month=${month}`);
+      if (year !== undefined) params.push(`year=${year}`);
+      if (params.length) query += "?" + params.join("&");
+      return request<FinancialSummary>(query);
+    },
   },
 
   records: {
@@ -222,6 +235,37 @@ export const api = {
         const json = await res.json().catch(() => ({}));
         throw new Error(json.message || "Export failed");
       }
+      return res.blob();
+    },
+    patientsCsv: async (): Promise<Blob> => {
+      const res = await fetch(`${API}/exports/patients/csv`, {
+        headers: { Authorization: `Bearer ${getCurrentToken()}` },
+      });
+      if (!res.ok) throw new Error("Erro ao exportar CSV");
+      return res.blob();
+    },
+    appointmentsCsv: async (month?: number, year?: number): Promise<Blob> => {
+      let query = "/exports/appointments/csv";
+      const params: string[] = [];
+      if (month !== undefined) params.push(`month=${month}`);
+      if (year !== undefined) params.push(`year=${year}`);
+      if (params.length) query += "?" + params.join("&");
+      const res = await fetch(`${API}${query}`, {
+        headers: { Authorization: `Bearer ${getCurrentToken()}` },
+      });
+      if (!res.ok) throw new Error("Erro ao exportar CSV");
+      return res.blob();
+    },
+    paymentsCsv: async (month?: number, year?: number): Promise<Blob> => {
+      let query = "/exports/payments/csv";
+      const params: string[] = [];
+      if (month !== undefined) params.push(`month=${month}`);
+      if (year !== undefined) params.push(`year=${year}`);
+      if (params.length) query += "?" + params.join("&");
+      const res = await fetch(`${API}${query}`, {
+        headers: { Authorization: `Bearer ${getCurrentToken()}` },
+      });
+      if (!res.ok) throw new Error("Erro ao exportar CSV");
       return res.blob();
     },
   },
@@ -403,6 +447,8 @@ export interface DashboardData {
   appointments_count: number;
   todays_appointments: CalendarEvent[];
   upcoming_appointments: CalendarEvent[];
+  monthly_appointments: { month: string; count: number }[];
+  monthly_financial: { month: string; total_cents: number }[];
 }
 
 export interface PaginatedResult<T> {

@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, type CalendarEvent } from "../lib/api";
+import { api, type DashboardData } from "../lib/api";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, UsersRound, TrendingUp } from "lucide-react";
 import { formatBRL } from "../lib/format";
-
-interface DashboardData {
-  appointments_count: number;
-  todays_appointments: CalendarEvent[];
-  upcoming_appointments: CalendarEvent[];
-}
+import { CardSkeleton, DetailSkeleton } from "../components/ui/Skeleton";
+import Skeleton from "../components/ui/Skeleton";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line,
+} from "recharts";
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -29,7 +28,29 @@ export default function Dashboard() {
   }, []);
 
   if (error) return <div className="p-6 text-destructive">{error}</div>;
-  if (!data) return <div className="p-6 text-center py-12 text-muted-foreground">Carregando...</div>;
+
+  if (!data) return (
+    <div className="p-4 sm:p-6 space-y-6">
+      <Skeleton className="h-8 w-48" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <CardSkeleton /><CardSkeleton /><CardSkeleton />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="app-surface p-5"><DetailSkeleton /></div>
+        <div className="app-surface p-5"><DetailSkeleton /></div>
+      </div>
+    </div>
+  );
+
+  const apptData = data.monthly_appointments.map((m) => ({
+    month: m.month.slice(5),
+    atendimentos: m.count,
+  }));
+
+  const finData = data.monthly_financial.map((m) => ({
+    month: m.month.slice(5),
+    receita: m.total_cents / 100,
+  }));
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
@@ -47,6 +68,48 @@ export default function Dashboard() {
         <div className="app-surface p-5">
           <p className="text-sm text-muted-foreground">Recebido</p>
           <p className="text-3xl font-bold text-success mt-1">{formatBRL(finSummary.paid_cents)}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="app-surface p-5">
+          <h2 className="font-semibold text-slate-900 mb-3">Atendimentos por mês</h2>
+          {apptData.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <CalendarDays className="h-8 w-8 mb-2 opacity-40" />
+              <p className="text-sm">Nenhum atendimento nos últimos 12 meses</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={apptData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 12 }} stroke="hsl(var(--muted-foreground))" />
+                <Tooltip />
+                <Bar dataKey="atendimentos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div className="app-surface p-5">
+          <h2 className="font-semibold text-slate-900 mb-3">Receita mensal</h2>
+          {finData.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <TrendingUp className="h-8 w-8 mb-2 opacity-40" />
+              <p className="text-sm">Nenhuma receita nos últimos 12 meses</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={finData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="month" tick={{ fontSize: 12 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis tick={{ fontSize: 12 }} stroke="hsl(var(--muted-foreground))" tickFormatter={(v) => `R$${v}`} />
+                <Tooltip formatter={(v) => [`R$ ${Number(v).toFixed(2)}`, "Receita"]} />
+                <Line type="monotone" dataKey="receita" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ fill: "hsl(var(--primary))" }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
 

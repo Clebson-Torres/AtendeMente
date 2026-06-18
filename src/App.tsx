@@ -12,6 +12,7 @@ import Payments from "./pages/Payments";
 import Layout from "./components/Layout";
 import ToastContainer from "./components/ui/Toast";
 import LockScreen from "./components/LockScreen";
+import Skeleton from "./components/ui/Skeleton";
 
 export interface AuthUser {
   uid: string;
@@ -28,7 +29,7 @@ export const useAuth = () => useContext(AuthContext);
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="flex h-screen items-center justify-center text-gray-500">Carregando...</div>;
+  if (loading) return <div className="flex h-screen items-center justify-center"><Skeleton className="h-8 w-48" /></div>;
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }

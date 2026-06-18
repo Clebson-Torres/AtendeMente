@@ -176,11 +176,17 @@ pub async fn list_patients(
     search: &str,
     page: i64,
     per_page: i64,
+    status_filter: Option<&str>,
 ) -> Result<PaginatedData<PatientListItem>, AppError> {
     let offset = (page - 1) * per_page;
+    let status_where = match status_filter {
+        Some(s) if !s.is_empty() => format!(" AND status = '{}'", s),
+        _ => String::new(),
+    };
+
     let (rows, total) = if search.trim().is_empty() {
         let total: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL"#,
+            &format!("SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL{}", status_where),
         )
         .bind(user_id)
         .fetch_one(db)
@@ -188,10 +194,7 @@ pub async fn list_patients(
         .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
 
         let rows = sqlx::query_as::<_, PatientRow>(
-            r#"SELECT * FROM patients
-            WHERE user_id = ? AND deleted_at IS NULL
-            ORDER BY full_name
-            LIMIT ? OFFSET ?"#,
+            &format!("SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL{} ORDER BY full_name LIMIT ? OFFSET ?", status_where),
         )
         .bind(user_id)
         .bind(per_page)
@@ -205,15 +208,7 @@ pub async fn list_patients(
         let (name_pattern, token_pattern) = search_where_clause(search);
 
         let total: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*) FROM patients
-            WHERE user_id = ? AND deleted_at IS NULL
-            AND (
-                full_name LIKE ?
-                OR id IN (
-                    SELECT patient_id FROM patient_search_tokens
-                    WHERE token_text LIKE ?
-                )
-            )"#,
+            &format!("SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL{} AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))", status_where),
         )
         .bind(user_id)
         .bind(&name_pattern)
@@ -223,17 +218,7 @@ pub async fn list_patients(
         .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
 
         let rows = sqlx::query_as::<_, PatientRow>(
-            r#"SELECT * FROM patients
-            WHERE user_id = ? AND deleted_at IS NULL
-            AND (
-                full_name LIKE ?
-                OR id IN (
-                    SELECT patient_id FROM patient_search_tokens
-                    WHERE token_text LIKE ?
-                )
-            )
-            ORDER BY full_name
-            LIMIT ? OFFSET ?"#,
+            &format!("SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL{} AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?", status_where),
         )
         .bind(user_id)
         .bind(&name_pattern)

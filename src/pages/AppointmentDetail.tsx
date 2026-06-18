@@ -16,6 +16,7 @@ import { ArrowLeft, Lock, Calendar, Upload, File } from "lucide-react";
 import RescheduleDialog from "../components/RescheduleDialog";
 import FileUploadButton from "../components/FileUploadButton";
 import FileList from "../components/FileList";
+import Skeleton, { DetailSkeleton } from "../components/ui/Skeleton";
 
 export default function AppointmentDetail() {
   const { id } = useParams<{ id: string }>();
@@ -165,7 +166,7 @@ export default function AppointmentDetail() {
     }
   }
 
-  if (loading) return <div className="p-6 text-muted-foreground">Carregando...</div>;
+  if (loading) return <div className="p-6"><DetailSkeleton /></div>;
   if (error) return <div className="p-6 text-destructive">{error}</div>;
   if (!appt) return <div className="p-6 text-muted-foreground">Atendimento não encontrado.</div>;
 
@@ -245,7 +246,7 @@ export default function AppointmentDetail() {
           <span className="flex items-center gap-1 text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full"><Lock className="h-3 w-3" /> Criptografado</span>
         </div>
         {recordLoading ? (
-          <p className="text-muted-foreground text-sm">Carregando...</p>
+          <Skeleton className="h-5 w-full" />
         ) : (
           <>
             <TextArea rows={12} placeholder="Registre aqui as anotações da sessão. O conteúdo será criptografado automaticamente." value={recordContent} onChange={(e) => setRecordContent(e.target.value)} className="font-mono text-sm" />

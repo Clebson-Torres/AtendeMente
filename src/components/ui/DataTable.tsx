@@ -32,6 +32,19 @@ export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, 
 
   const totalPages = total !== undefined && perPage ? Math.max(1, Math.ceil(total / perPage)) : 1;
 
+  function getPageNumbers(current: number, total: number): (number | "...")[] {
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+    const pages: (number | "...")[] = [];
+    pages.push(1);
+    if (current > 3) pages.push("...");
+    const start = Math.max(2, current - 1);
+    const end = Math.min(total - 1, current + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (current < total - 2) pages.push("...");
+    pages.push(total);
+    return pages;
+  }
+
   return (
     <div>
       <div className="overflow-x-auto">
@@ -74,25 +87,31 @@ export default function DataTable<T>({ columns, data, keyExtractor, onRowClick, 
             <button
               onClick={() => onPageChange((page ?? 1) - 1)}
               disabled={(page ?? 1) <= 1}
+              aria-label="Página anterior"
               className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronLeft className="h-4 w-4" />
             </button>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
-              <button
-                key={p}
-                onClick={() => onPageChange(p)}
-                className={cn(
-                  "px-2 py-1 text-sm rounded",
-                  p === (page ?? 1) ? "bg-primary text-primary-foreground" : "hover:bg-muted"
-                )}
-              >
-                {p}
-              </button>
-            ))}
+            {getPageNumbers(page ?? 1, totalPages).map((p, i) =>
+              p === "..." ? (
+                <span key={`ellipsis-${i}`} className="px-2 py-1 text-sm text-muted-foreground">...</span>
+              ) : (
+                <button
+                  key={p}
+                  onClick={() => onPageChange(p as number)}
+                  className={cn(
+                    "px-2 py-1 text-sm rounded",
+                    p === (page ?? 1) ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+                  )}
+                >
+                  {p}
+                </button>
+              )
+            )}
             <button
               onClick={() => onPageChange((page ?? 1) + 1)}
               disabled={(page ?? 1) >= totalPages}
+              aria-label="Próxima página"
               className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronRight className="h-4 w-4" />

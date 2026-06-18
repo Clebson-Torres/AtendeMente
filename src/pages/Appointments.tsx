@@ -11,8 +11,10 @@ import StatusBadge from "../components/ui/StatusBadge";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatTime } from "../lib/format";
+import { downloadFile } from "../lib/utils";
+import { CalendarSkeleton } from "../components/ui/Skeleton";
 import { appointmentSchema, type AppointmentInput } from "../lib/schemas";
-import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat, Download, Filter } from "lucide-react";
 
 const DAY_NAMES = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
 const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
@@ -24,6 +26,29 @@ export default function Appointments() {
   const [month, setMonth] = useState(today.getMonth());
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [confirmationFilter, setConfirmationFilter] = useState("");
+  const [cellHeight, setCellHeight] = useState(90);
+
+  useEffect(() => {
+    function updateHeight() {
+      const rows = Math.ceil((() => {
+        const firstDay = new Date(year, month, 1).getDay();
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        const prevMonthDays = new Date(year, month, 0).getDate();
+        const days: (number | null)[] = [];
+        for (let i = firstDay - 1; i >= 0; i--) days.push(-(prevMonthDays - i));
+        for (let d = 1; d <= daysInMonth; d++) days.push(d);
+        while (days.length % 7 !== 0) days.push(null);
+        return days.length / 7;
+      })());
+      const OFFSET = 300;
+      setCellHeight(Math.max(70, Math.floor((window.innerHeight - OFFSET) / rows)));
+    }
+    updateHeight();
+    window.addEventListener("resize", updateHeight);
+    return () => window.removeEventListener("resize", updateHeight);
+  }, [year, month]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [patients, setPatients] = useState<PatientListItem[]>([]);
@@ -56,6 +81,24 @@ export default function Appointments() {
   }
 
   useEffect(() => { loadEvents(); }, [year, month]);
+
+  const filteredEvents = useMemo(() => {
+    return events.filter((e) => {
+      if (statusFilter && e.status !== statusFilter) return false;
+      if (confirmationFilter && e.confirmation_status !== confirmationFilter) return false;
+      return true;
+    });
+  }, [events, statusFilter, confirmationFilter]);
+
+  async function handleExportCsv() {
+    try {
+      const blob = await api.exports.appointmentsCsv(month + 1, year);
+      await downloadFile(blob, `agenda-${year}-${String(month + 1).padStart(2, "0")}.csv`);
+      toast("CSV exportado.");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  }
 
   async function openCreate(date?: Date) {
     try {
@@ -101,7 +144,7 @@ export default function Appointments() {
 
   function clickDay(day: number) {
     const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const dayEvts = events.filter((e) => e.start.startsWith(dateStr)).sort((a, b) => a.start.localeCompare(b.start));
+    const dayEvts = filteredEvents.filter((e) => e.start.startsWith(dateStr)).sort((a, b) => a.start.localeCompare(b.start));
     if (dayEvts.length === 0) {
       openCreate(new Date(year, month, day));
     } else {
@@ -119,11 +162,6 @@ export default function Appointments() {
   for (let d = 1; d <= daysInMonth; d++) calendarDays.push(d);
   while (calendarDays.length % 7 !== 0) calendarDays.push(null);
 
-  function eventsOnDay(day: number): number {
-    const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    return events.filter((e) => e.start.startsWith(dateStr)).length;
-  }
-
   return (
     <div className="p-4 sm:p-6 space-y-5">
       <div className="flex items-center justify-between">
@@ -131,7 +169,33 @@ export default function Appointments() {
           <CalendarDays className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-display font-semibold text-slate-900">Agenda</h1>
         </div>
-        <Button onClick={() => openCreate()}><Plus className="h-4 w-4 mr-2" />Novo Atendimento</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleExportCsv}>
+            <Download className="h-4 w-4 mr-1" />CSV
+          </Button>
+          <Button onClick={() => openCreate()}><Plus className="h-4 w-4 mr-2" />Novo Atendimento</Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+          <Filter className="h-4 w-4" />
+        </div>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Filtrar por status"
+          className="h-9 rounded-xl border border-input bg-background px-3 text-xs text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30">
+          <option value="">Todos status</option>
+          <option value="scheduled">Agendado</option>
+          <option value="completed">Concluído</option>
+          <option value="cancelled">Cancelado</option>
+          <option value="no_show">Não compareceu</option>
+        </select>
+        <select value={confirmationFilter} onChange={(e) => setConfirmationFilter(e.target.value)} aria-label="Filtrar por confirmação"
+          className="h-9 rounded-xl border border-input bg-background px-3 text-xs text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30">
+          <option value="">Todas confirmações</option>
+          <option value="confirmed">Confirmado</option>
+          <option value="unconfirmed">Não confirmado</option>
+          <option value="cancelled">Cancelado</option>
+        </select>
       </div>
 
       <div className="app-surface">
@@ -146,7 +210,7 @@ export default function Appointments() {
         </div>
 
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground">Carregando...</div>
+          <div className="p-4"><CalendarSkeleton /></div>
         ) : (
           <>
             <div className="grid grid-cols-7 border-t border-border">
@@ -157,25 +221,29 @@ export default function Appointments() {
                 const isCurrentDay = day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
                 const isOtherMonth = day !== null && day < 0;
                 const displayDay = day !== null ? (day < 0 ? -day : day) : null;
-                const count = day !== null && day > 0 ? eventsOnDay(day) : 0;
-  function statusBgColor(status: string): string {
-    switch (status) {
-      case "completed": return "bg-green-500/80";
-      case "cancelled": return "bg-red-500/80";
-      case "no_show": return "bg-gray-400/80";
-      default: return "bg-primary/80";
-    }
-  }
-
-  return (
+                const dayEvents = day !== null && day > 0
+                  ? filteredEvents.filter(e => e.start.startsWith(`${year}-${String(month + 1).padStart(2, "0")}-${String(displayDay).padStart(2, "0")}`))
+                  : [];
+                const count = dayEvents.length;
+                const statusBgColor = (status: string) => {
+                  switch (status) {
+                    case "completed": return "bg-green-500/80";
+                    case "cancelled": return "bg-red-500/80";
+                    case "no_show": return "bg-gray-400/80";
+                    default: return "bg-primary/80";
+                  }
+                };
+                const heightClass = count > 3 ? "min-h-[120px]" : count > 0 ? "min-h-[90px]" : "min-h-[60px]";
+                return (
                   <div key={i} onClick={() => day !== null && day > 0 && clickDay(day)}
-                    className={`min-h-[90px] border-b border-r border-border/50 p-1.5 cursor-pointer transition-colors hover:bg-accent/50 ${isOtherMonth ? "text-muted-foreground/40" : ""} ${isCurrentDay ? "bg-accent/30" : ""}`}>
+                    style={{ minHeight: cellHeight }}
+                    className={`border-b border-r border-border/50 p-1.5 cursor-pointer transition-colors hover:bg-accent/50 ${isOtherMonth ? "text-muted-foreground/40" : ""} ${isCurrentDay ? "bg-accent/30" : ""}`}>
                     {displayDay && (
                       <>
                         <div className={`text-xs mb-1 ${isCurrentDay ? "font-bold text-primary" : "text-muted-foreground"}`}>{displayDay}</div>
                         {count > 0 && (
                           <div className="flex flex-wrap gap-0.5">
-                            {events.filter(e => e.start.startsWith(`${year}-${String(month + 1).padStart(2, "0")}-${String(displayDay).padStart(2, "0")}`)).slice(0, 3).map(e => (
+                            {dayEvents.slice(0, 3).map(e => (
                               <div key={e.id} className={`w-full text-[10px] truncate text-primary-foreground ${statusBgColor(e.status)} rounded-md px-1 py-0.5 font-medium`}>{e.title}</div>
                             ))}
                             {count > 3 && <div className="text-[10px] text-muted-foreground">+{count - 3} mais</div>}

@@ -3,6 +3,7 @@ import { api, type RecordFile } from "../lib/api";
 import Button from "./ui/Button";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import { Download, Trash2, FileText, FileImage, FileIcon } from "lucide-react";
+import { downloadFile } from "../lib/utils";
 
 interface Props {
   appointmentId: string;
@@ -45,14 +46,7 @@ export default function FileList({ appointmentId, onRefresh }: Props) {
   async function handleDownload(file: RecordFile) {
     try {
       const { blob, fileName } = await api.files.download(file.id);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      await downloadFile(blob, fileName);
     } catch (e: any) {
       console.error("Download failed:", e);
     }

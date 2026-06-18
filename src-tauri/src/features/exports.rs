@@ -12,6 +12,43 @@ pub struct ExportBundle {
     pub file_count: usize,
 }
 
+pub async fn export_patients_csv(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<String, AppError> {
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+        r#"SELECT id, full_name, chart_number, phone, email, birth_date, status
+        FROM patients WHERE user_id = ? AND deleted_at IS NULL
+        ORDER BY full_name"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Failed to export patients: {}", e)))?;
+
+    let mut csv = String::from("Nome,Prontuário,Telefone,Email,Data de Nascimento,Status\n");
+    for row in rows {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            escape_csv(&row.1),
+            row.2.as_deref().unwrap_or(""),
+            row.3.as_deref().unwrap_or(""),
+            row.4.as_deref().unwrap_or(""),
+            row.5.as_deref().unwrap_or(""),
+            row.6.as_deref().unwrap_or(""),
+        ));
+    }
+    Ok(csv)
+}
+
+fn escape_csv(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 pub async fn export_patient_bundle(
     db: &SqlitePool,
     user_id: &str,

@@ -1,7 +1,7 @@
 {
   "name": "atendemente-frontend",
   "private": true,
-  "version": "1.0.7",
+  "version": "1.0.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -34,6 +34,7 @@
     "@hookform/resolvers": "^5.4.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "lucide-react": "^1.18.0",
@@ -41,6 +42,7 @@
     "react-dom": "^18.3.0",
     "react-hook-form": "^7.78.0",
     "react-router-dom": "^6.26.0",
+    "recharts": "^3.8.1",
     "tailwind-merge": "^3.6.0",
     "zod": "^4.4.3"
   }

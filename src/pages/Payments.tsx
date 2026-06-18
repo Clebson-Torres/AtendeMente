@@ -13,12 +13,19 @@ import StatusBadge from "../components/ui/StatusBadge";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDate, formatTime } from "../lib/format";
+import { downloadFile } from "../lib/utils";
+import { TableSkeleton, CardSkeleton } from "../components/ui/Skeleton";
 import { paymentSchema, type PaymentInput } from "../lib/schemas";
 import { useNavigate } from "react-router-dom";
-import { CreditCard } from "lucide-react";
+import { CreditCard, Download, ChevronLeft, ChevronRight } from "lucide-react";
+
+const MONTH_NAMES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 
 export default function Payments() {
   const navigate = useNavigate();
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth() + 1);
   const [payments, setPayments] = useState<PaymentWithAppointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -36,7 +43,10 @@ export default function Payments() {
   async function load() {
     setLoading(true);
     try {
-      const [list, sum] = await Promise.all([api.payments.list(), api.payments.summary()]);
+      const [list, sum] = await Promise.all([
+        api.payments.list(month, year),
+        api.payments.summary(month, year),
+      ]);
       setPayments(list);
       setSummary(sum);
     } catch (e: any) {
@@ -46,7 +56,27 @@ export default function Payments() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [month, year]);
+
+  async function handleExportCsv() {
+    try {
+      const blob = await api.exports.paymentsCsv(month, year);
+      await downloadFile(blob, `financeiro-${year}-${String(month).padStart(2, "0")}.csv`);
+      toast("CSV exportado.");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  }
+
+  function prevMonth() {
+    if (month === 1) { setYear(y => y - 1); setMonth(12); }
+    else setMonth(m => m - 1);
+  }
+
+  function nextMonth() {
+    if (month === 12) { setYear(y => y + 1); setMonth(1); }
+    else setMonth(m => m + 1);
+  }
 
   function openEdit(p: PaymentWithAppointment) {
     setEditPayment(p);
@@ -105,6 +135,20 @@ export default function Payments() {
           <CreditCard className="h-6 w-6 text-primary" />
           <h1 className="text-2xl font-display font-semibold text-slate-900">Financeiro</h1>
         </div>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 app-surface px-3 py-1.5">
+            <button onClick={prevMonth} className="text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <span className="text-sm font-medium text-slate-900 min-w-[120px] text-center">{MONTH_NAMES[month - 1]} {year}</span>
+            <button onClick={nextMonth} className="text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+          <Button variant="outline" onClick={handleExportCsv}>
+            <Download className="h-4 w-4 mr-2" />Exportar CSV
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -116,7 +160,10 @@ export default function Payments() {
       {error && <p className="text-destructive text-sm">{error}</p>}
 
       {loading ? (
-        <div className="text-center py-12 text-muted-foreground">Carregando...</div>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4"><CardSkeleton /><CardSkeleton /><CardSkeleton /></div>
+          <div className="app-surface p-5"><TableSkeleton rows={6} cols={7} /></div>
+        </div>
       ) : (
         <div className="app-surface overflow-hidden">
           <DataTable columns={columns} data={payments} keyExtractor={(p) => p.appointment_id} emptyMessage="Nenhum atendimento financeiro encontrado." />

@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
+import { X } from "lucide-react";
 
 interface Props {
   open: boolean;
@@ -42,7 +43,7 @@ export default function Modal({ open, onClose, title, children, size = "md" }: P
       >
         <div className="flex items-center justify-between px-6 pt-6 pb-2">
           <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors rounded-full h-8 w-8 flex items-center justify-center hover:bg-secondary">&times;</button>
+          <button onClick={onClose} aria-label="Fechar" className="text-muted-foreground hover:text-foreground transition-colors rounded-full h-8 w-8 flex items-center justify-center hover:bg-secondary"><X className="h-5 w-5" /></button>
         </div>
         <div className="p-6">{children}</div>
       </div>

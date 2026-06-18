@@ -6,7 +6,7 @@ use crate::errors::AppError;
 pub async fn get_dashboard_data(
     db: &SqlitePool,
     user_id: &str,
-) -> Result<(i64, Vec<CalendarEvent>, Vec<CalendarEvent>), AppError> {
+) -> Result<(i64, Vec<CalendarEvent>, Vec<CalendarEvent>, Vec<serde_json::Value>, Vec<serde_json::Value>), AppError> {
     let now = chrono::Utc::now();
     let year = now.format("%Y").to_string();
     let month = now.format("%m").to_string();
@@ -91,5 +91,44 @@ pub async fn get_dashboard_data(
     })
     .collect();
 
-    Ok((count, todays, upcoming))
+    // Monthly appointments (last 12 months)
+    let twelve_months_ago = (now - chrono::Duration::days(365)).format("%Y-%m-%dT00:00:00").to_string();
+    let monthly_appointments = sqlx::query_as::<_, (String, i64)>(
+        r#"SELECT strftime('%Y-%m', starts_at) as month, COUNT(*) as count
+        FROM appointments
+        WHERE user_id = ? AND deleted_at IS NULL AND status != 'cancelled'
+        AND starts_at >= ?
+        GROUP BY strftime('%Y-%m', starts_at)
+        ORDER BY month"#,
+    )
+    .bind(user_id)
+    .bind(&twelve_months_ago)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Dashboard monthly error: {}", e)))?
+    .into_iter()
+    .map(|(m, c)| serde_json::json!({"month": m, "count": c}))
+    .collect();
+
+    // Monthly financial (last 12 months)
+    let twelve_months_ago_fin = (now - chrono::Duration::days(365)).format("%Y-%m-%dT00:00:00").to_string();
+    let monthly_financial = sqlx::query_as::<_, (String, i64)>(
+        r#"SELECT strftime('%Y-%m', a.starts_at) as month, COALESCE(SUM(pay.amount_received_cents), 0) as total
+        FROM appointments a
+        LEFT JOIN payments pay ON pay.appointment_id = a.id AND pay.deleted_at IS NULL AND pay.status = 'paid'
+        WHERE a.user_id = ? AND a.deleted_at IS NULL AND a.status != 'cancelled'
+        AND a.starts_at >= ?
+        GROUP BY strftime('%Y-%m', a.starts_at)
+        ORDER BY month"#,
+    )
+    .bind(user_id)
+    .bind(&twelve_months_ago_fin)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Dashboard financial error: {}", e)))?
+    .into_iter()
+    .map(|(m, t)| serde_json::json!({"month": m, "total_cents": t}))
+    .collect();
+
+    Ok((count, todays, upcoming, monthly_appointments, monthly_financial))
 }

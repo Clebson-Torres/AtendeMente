@@ -31,11 +31,18 @@ pub struct PatientSearchQuery {
     pub search: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
+    pub status: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct CancelInput {
     pub cancel_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct MonthYearQuery {
+    pub month: Option<u32>,
+    pub year: Option<i32>,
 }
 
 // ─── Auth Helper ────────────────────────────────────────────────────────────
@@ -92,6 +99,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/files/{id}/download", get(download_file))
         .route("/files/{id}", delete(delete_file_handler))
         .route("/exports/patient/{id}", get(export_patient))
+        .route("/exports/patients/csv", get(export_patients_csv))
+        .route("/exports/appointments/csv", get(export_appointments_csv))
+        .route("/exports/payments/csv", get(export_payments_csv))
         .route("/patients/import/preview", post(import_preview))
         .route("/patients/import/commit", post(import_commit))
         .route("/dashboard", get(dashboard))
@@ -118,7 +128,7 @@ async fn list_patients(
     let db = state.get_or_open_user_db(&user.id).await?;
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
-    let result = features::patients::list_patients(&db, &user.id, query.search.as_deref().unwrap_or(""), page, per_page).await?;
+    let result = features::patients::list_patients(&db, &user.id, query.search.as_deref().unwrap_or(""), page, per_page, query.status.as_deref()).await?;
     Ok(Json(ActionResponse::success("", result)))
 }
 
@@ -276,10 +286,11 @@ async fn upsert_payment(
 async fn list_payments(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<MonthYearQuery>,
 ) -> Result<Json<ActionResponse<Vec<crate::db::models::PaymentWithAppointment>>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let payments = features::payments::list_payments(&db, &user.id).await?;
+    let payments = features::payments::list_payments(&db, &user.id, query.month, query.year).await?;
     Ok(Json(ActionResponse::success("", payments)))
 }
 
@@ -296,10 +307,11 @@ async fn list_pending_payments(
 async fn payment_summary(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<MonthYearQuery>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let (paid_cents, pending_cents) = features::payments::get_financial_summary(&db, &user.id).await?;
+    let (paid_cents, pending_cents) = features::payments::get_financial_summary(&db, &user.id, query.month, query.year).await?;
     Ok(Json(ActionResponse::success("", serde_json::json!({
         "paid_cents": paid_cents,
         "pending_cents": pending_cents,
@@ -437,6 +449,62 @@ async fn export_patient(
     ))
 }
 
+async fn export_patients_csv(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    let csv = features::exports::export_patients_csv(&db, &user.id).await?;
+    Ok((
+        axum::http::StatusCode::OK,
+        [
+            (axum::http::HeaderName::from_static("content-type"), "text/csv; charset=utf-8".into()),
+            (axum::http::HeaderName::from_static("content-disposition"), "attachment; filename=\"pacientes.csv\"".into()),
+        ],
+        csv.into_bytes(),
+    ))
+}
+
+async fn export_appointments_csv(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<MonthYearQuery>,
+) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    let csv = features::appointments::export_appointments_csv(&db, &user.id, query.month, query.year).await?;
+    Ok((
+        axum::http::StatusCode::OK,
+        [
+            (axum::http::HeaderName::from_static("content-type"), "text/csv; charset=utf-8".into()),
+            (axum::http::HeaderName::from_static("content-disposition"), "attachment; filename=\"agenda.csv\"".into()),
+        ],
+        csv.into_bytes(),
+    ))
+}
+
+async fn export_payments_csv(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<MonthYearQuery>,
+) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
+    let user = get_authenticated_user(&headers, &state).await?;
+    let db = state.get_or_open_user_db(&user.id).await?;
+    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    let csv = features::payments::export_payments_csv(&db, &user.id, query.month, query.year).await?;
+    Ok((
+        axum::http::StatusCode::OK,
+        [
+            (axum::http::HeaderName::from_static("content-type"), "text/csv; charset=utf-8".into()),
+            (axum::http::HeaderName::from_static("content-disposition"), "attachment; filename=\"financeiro.csv\"".into()),
+        ],
+        csv.into_bytes(),
+    ))
+}
+
 // ─── Import ────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -508,10 +576,12 @@ async fn dashboard(
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let (count, todays, upcoming) = features::dashboard::get_dashboard_data(&db, &user.id).await?;
+    let (count, todays, upcoming, monthly_appointments, monthly_financial) = features::dashboard::get_dashboard_data(&db, &user.id).await?;
     Ok(Json(ActionResponse::success("", serde_json::json!({
         "appointments_count": count,
         "todays_appointments": todays,
         "upcoming_appointments": upcoming,
+        "monthly_appointments": monthly_appointments,
+        "monthly_financial": monthly_financial,
     }))))
 }
