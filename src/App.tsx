@@ -9,7 +9,6 @@ import PatientDetail from "./pages/PatientDetail";
 import Appointments from "./pages/Appointments";
 import AppointmentDetail from "./pages/AppointmentDetail";
 import Payments from "./pages/Payments";
-import NetworkInfo from "./pages/NetworkInfo";
 import Layout from "./components/Layout";
 import ToastContainer from "./components/ui/Toast";
 import LockScreen from "./components/LockScreen";
@@ -104,7 +103,6 @@ export default function App() {
                   <Route path="/appointments" element={<Appointments />} />
                   <Route path="/appointments/:id" element={<AppointmentDetail />} />
                   <Route path="/payments" element={<Payments />} />
-                  <Route path="/network" element={<NetworkInfo />} />
                 </Routes>
               </Layout>
             </ProtectedRoute>

@@ -59,8 +59,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 keyring = { version = "3", features = ["windows-native"] }
 dotenvy = "0.15"
-mime_guess = "2"
-local-ip-address = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

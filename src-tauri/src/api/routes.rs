@@ -105,44 +105,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/patients/import/preview", post(import_preview))
         .route("/patients/import/commit", post(import_commit))
         .route("/dashboard", get(dashboard))
-        .route("/network-info", get(network_info))
         .with_state(state)
-}
-
-// ─── Network Info ───────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-struct NetworkInfo {
-    ipv4: Vec<String>,
-    ipv6: Vec<String>,
-    port: u16,
-}
-
-async fn network_info(
-    State(state): State<Arc<AppState>>,
-) -> Json<ActionResponse<NetworkInfo>> {
-    let mut v4 = Vec::new();
-    let mut v6 = Vec::new();
-
-    if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
-        for (_, ip) in ifaces {
-            match ip {
-                std::net::IpAddr::V4(a) if !a.is_loopback() && !a.is_link_local() => {
-                    v4.push(a.to_string());
-                }
-                std::net::IpAddr::V6(a) if !a.is_loopback() => {
-                    v6.push(a.to_string());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    Json(ActionResponse::success("", NetworkInfo {
-        ipv4: v4,
-        ipv6: v6,
-        port: state.config.server_port,
-    }))
 }
 
 // ─── Health Check ───────────────────────────────────────────────────────────

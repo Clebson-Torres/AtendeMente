@@ -14,8 +14,7 @@ pub mod utils;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::{body::Body, extract::DefaultBodyLimit, http::StatusCode, middleware as axum_middleware, response::Response, Router};
-use std::path::PathBuf;
+use axum::{extract::DefaultBodyLimit, middleware as axum_middleware, Router};
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::sync::RwLock;
@@ -80,47 +79,9 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
     let auth_router = crate::auth::create_auth_router(state.clone());
     let api_routes = api::routes::create_router(state.clone());
 
-    let frontend_dist: PathBuf = std::env::var("FRONTEND_DIST")
-        .unwrap_or_else(|_| "../dist".into())
-        .into();
-
-    let dist = frontend_dist.clone();
     let app = Router::new()
         .nest("/api", auth_router)
         .nest("/api", api_routes)
-        .fallback_service(
-            tower::service_fn(move |_req: axum::http::Request<Body>| {
-                let dist = dist.clone();
-                async move {
-                    let path = _req.uri().path().trim_start_matches('/');
-                    let file_path = dist.join(path);
-                    if file_path.exists() && file_path.is_file() {
-                        match tokio::fs::read(&file_path).await {
-                            Ok(data) => {
-                                let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
-                                Ok(Response::builder()
-                                    .header("content-type", mime.as_ref())
-                                    .body(Body::from(data))
-                                    .unwrap())
-                            }
-                            Err(_) => Ok(Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Body::from("Not found"))
-                                .unwrap()),
-                        }
-                    } else {
-                        let index_path = dist.join("index.html");
-                        match tokio::fs::read_to_string(&index_path).await {
-                            Ok(html) => Ok(Response::new(Body::from(html))),
-                            Err(_) => Ok(Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Body::from("Not found"))
-                                .unwrap()),
-                        }
-                    }
-                }
-            }),
-        )
         .route_layer(axum_middleware::from_fn(crate::middleware::security_headers))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
@@ -137,7 +98,7 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
                 .allow_credentials(false),
         );
 
-    let addr = format!("0.0.0.0:{}", state.config.server_port);
+    let addr = format!("127.0.0.1:{}", state.config.server_port);
     tracing::info!("Starting API server on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
