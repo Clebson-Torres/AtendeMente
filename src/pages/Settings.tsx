@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type BackupConfigData } from "../lib/api";
-import { Shield, Download, Upload, RefreshCw } from "lucide-react";
+import { Shield, Download, Upload, RefreshCw, Lock, Unlock } from "lucide-react";
 import Button from "../components/ui/Button";
 import Select from "../components/ui/Select";
 import { downloadFile } from "../lib/utils";
@@ -14,6 +14,13 @@ export default function Settings() {
   const [autoEnabled, setAutoEnabled] = useState(false);
   const [frequency, setFrequency] = useState("daily");
   const [saving, setSaving] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordMode, setPasswordMode] = useState<"export" | "import">("export");
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupPasswordConfirm, setBackupPasswordConfirm] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordForRestore, setPasswordForRestore] = useState<string | null>(null);
+  const pendingRestoreFile = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
     api.backup.getConfig()
@@ -26,10 +33,29 @@ export default function Settings() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleCreateBackup = async () => {
+  const handleCreateBackupClick = () => {
+    setPasswordMode("export");
+    setBackupPassword("");
+    setBackupPasswordConfirm("");
+    setPasswordError("");
+    setShowPasswordModal(true);
+  };
+
+  const handleConfirmExport = async () => {
+    const pw = backupPassword;
+    if (pw.length > 0 && pw.length < 12) {
+      setPasswordError("Minimo 12 caracteres para backup com senha.");
+      return;
+    }
+    if (pw.length > 0 && pw !== backupPasswordConfirm) {
+      setPasswordError("Senhas nao conferem.");
+      return;
+    }
+    setShowPasswordModal(false);
     setCreating(true);
     try {
-      const { blob, fileName } = await api.backup.create();
+      const password = pw.length >= 12 ? pw : undefined;
+      const { blob, fileName } = await api.backup.create(password);
       await downloadFile(blob, fileName);
       const c = await api.backup.getConfig();
       setConfig(c);
@@ -44,26 +70,52 @@ export default function Settings() {
   const handleRestoreBackup = () => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".zip";
+    input.accept = ".zip,.atendemente";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
-      setRestoring(true);
-      try {
+      const isEncrypted = file.name.endsWith(".atendemente") || file.name.endsWith(".atendemente");
+      if (isEncrypted) {
         const buffer = await file.arrayBuffer();
-        const bytes = new Uint8Array(buffer);
-        let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const base64 = btoa(binary);
-        await api.backup.restore(base64);
-        toast("Backup restaurado. Recarregue a pagina.");
-      } catch (e: any) {
-        toast(e.message || "Erro ao restaurar backup", "error");
-      } finally {
-        setRestoring(false);
+        pendingRestoreFile.current = new Uint8Array(buffer);
+        setPasswordMode("import");
+        setBackupPassword("");
+        setBackupPasswordConfirm("");
+        setPasswordError("");
+        setShowPasswordModal(true);
+        return;
       }
+      await doRestore(new Uint8Array(await file.arrayBuffer()), undefined);
     };
     input.click();
+  };
+
+  const handleConfirmRestore = async () => {
+    const pw = backupPassword;
+    if (pw.length < 12) {
+      setPasswordError("Minimo 12 caracteres.");
+      return;
+    }
+    setShowPasswordModal(false);
+    if (pendingRestoreFile.current) {
+      await doRestore(pendingRestoreFile.current, pw);
+      pendingRestoreFile.current = null;
+    }
+  };
+
+  const doRestore = async (bytes: Uint8Array, password: string | undefined) => {
+    setRestoring(true);
+    try {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const base64 = btoa(binary);
+      await api.backup.restore(base64, password);
+      toast("Backup restaurado. Recarregue a pagina.");
+    } catch (e: any) {
+      toast(e.message || "Erro ao restaurar backup", "error");
+    } finally {
+      setRestoring(false);
+    }
   };
 
   const handleSaveAutoConfig = async () => {
@@ -101,9 +153,13 @@ export default function Settings() {
           <Download className="h-5 w-5" />
           Backup Manual
         </h2>
-        <Button onClick={handleCreateBackup} disabled={creating}>
-          {creating ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
-          {creating ? "Criando..." : "Fazer Backup Agora"}
+        <p className="text-sm text-muted-foreground">
+          Opcional: defina uma senha para criptografar o backup (min. 12 caracteres).
+          Backups sem senha serao exportados como ZIP simples.
+        </p>
+        <Button onClick={handleCreateBackupClick} disabled={creating}>
+          {creating ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Lock className="h-4 w-4 mr-2" />}
+          {creating ? "Criando..." : "Exportar Backup"}
         </Button>
         {config?.last_backup_at && (
           <p className="text-xs text-muted-foreground">
@@ -173,6 +229,49 @@ export default function Settings() {
           </p>
         )}
       </div>
+
+      {showPasswordModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="app-surface p-6 rounded-xl shadow-xl max-w-md w-full mx-4 space-y-4">
+            <h3 className="font-display text-lg font-semibold">
+              {passwordMode === "export" ? "Proteger Backup com Senha" : "Senha do Backup"}
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {passwordMode === "export"
+                ? "Deixe em branco para exportar sem criptografia."
+                : "Este backup esta criptografado. Informe a senha definida na exportacao."}
+            </p>
+            <div className="space-y-3">
+              <input
+                type="password"
+                placeholder="Senha (min. 12 caracteres)"
+                value={backupPassword}
+                onChange={(e) => setBackupPassword(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                autoFocus
+              />
+              {passwordMode === "export" && (
+                <input
+                  type="password"
+                  placeholder="Confirmar senha"
+                  value={backupPasswordConfirm}
+                  onChange={(e) => setBackupPasswordConfirm(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                />
+              )}
+            </div>
+            {passwordError && <p className="text-sm text-destructive">{passwordError}</p>}
+            <div className="flex gap-3 justify-end">
+              <Button variant="ghost" onClick={() => setShowPasswordModal(false)}>
+                Cancelar
+              </Button>
+              <Button onClick={passwordMode === "export" ? handleConfirmExport : handleConfirmRestore}>
+                {passwordMode === "export" ? "Exportar" : "Restaurar"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

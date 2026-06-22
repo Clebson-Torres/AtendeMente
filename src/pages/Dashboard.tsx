@@ -6,12 +6,15 @@ import { formatBRL } from "../lib/format";
 import { CardSkeleton, DetailSkeleton } from "../components/ui/Skeleton";
 import Skeleton from "../components/ui/Skeleton";
 import ExportPdfButton from "../components/ExportPdfButton";
+import SecurityStatusCard from "../components/security/SecurityStatusCard";
+import { useAuth } from "../App";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line,
 } from "recharts";
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [data, setData] = useState<DashboardData | null>(null);
   const [finSummary, setFinSummary] = useState({ paid_cents: 0, pending_cents: 0 });
   const [error, setError] = useState("");
@@ -75,6 +78,8 @@ export default function Dashboard() {
           <p className="text-3xl font-bold text-success mt-1">{formatBRL(finSummary.paid_cents)}</p>
         </div>
       </div>
+
+      <SecurityStatusCard onboardingCompleted={user?.onboarding_completed ?? false} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="app-surface p-5">

@@ -220,6 +220,7 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
                     axum::http::Method::POST,
                     axum::http::Method::PUT,
                     axum::http::Method::DELETE,
+                    axum::http::Method::PATCH,
                 ])
                 .allow_headers(tower_http::cors::Any)
                 .allow_credentials(false),

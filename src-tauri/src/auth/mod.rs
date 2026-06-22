@@ -1,11 +1,13 @@
 pub mod auth_service;
+#[cfg(test)]
+mod tests;
 
 use std::sync::Arc;
 
 use axum::{
     extract::State,
     http::HeaderMap,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -24,6 +26,7 @@ pub fn create_auth_router(state: Arc<AppState>) -> Router {
         .route("/auth/reset-password", post(reset_password_handler))
         .route("/auth/lock", post(lock_handler))
         .route("/auth/unlock", post(unlock_handler))
+        .route("/auth/onboarding", patch(onboarding_handler))
         .with_state(state)
 }
 
@@ -42,7 +45,8 @@ struct LoginInput {
 
 #[derive(Deserialize)]
 struct RecoverInput {
-    user_id: String,
+    user_id: Option<String>,
+    email: Option<String>,
     recovery_secret: String,
 }
 
@@ -103,6 +107,7 @@ async fn register_handler(
             "full_name": result.full_name,
             "token": result.token,
             "recovery_secret": result.recovery_secret,
+            "onboarding_completed": false,
         }),
     )))
 }
@@ -160,6 +165,7 @@ async fn login_handler(
             "email": result.email,
             "full_name": result.full_name,
             "token": result.token,
+            "onboarding_completed": result.onboarding_completed,
         }),
     )))
 }
@@ -201,6 +207,10 @@ async fn me_handler(
         .await
         .map_err(|e| AppError::unauthorized(e))?;
 
+    let onboarding_completed = auth_service::get_onboarding_status(&state.auth_db, &user_id)
+        .await
+        .unwrap_or(false);
+
     // Re-open user's app DB (useful after page refresh)
     state.get_or_open_user_db(&user_id).await?;
 
@@ -210,6 +220,7 @@ async fn me_handler(
             "user_id": user_id,
             "email": email,
             "full_name": full_name,
+            "onboarding_completed": onboarding_completed,
         }),
     )))
 }
@@ -218,14 +229,24 @@ async fn recover_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<RecoverInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    let user_id = match (&input.user_id, &input.email) {
+        (Some(uid), _) if !uid.is_empty() => uid.clone(),
+        (_, Some(email)) if !email.is_empty() => {
+            auth_service::find_user_id_by_email(&state.auth_db, email)
+                .await
+                .map_err(|e| AppError::not_found(e))?
+        }
+        _ => return Err(AppError::bad_request("Informe user_id ou email.")),
+    };
+
     crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:password-reset", &input.user_id, 3, 900_000,
+        &state.auth_db, "auth:password-reset", &user_id, 3, 900_000,
     )
     .await?;
 
     let result = auth_service::recover_with_secret(
         &state.auth_db,
-        &input.user_id,
+        &user_id,
         &input.recovery_secret,
     )
     .await
@@ -323,6 +344,24 @@ async fn unlock_handler(
     .await;
 
     Ok(Json(ActionResponse::<()>::success_empty("Tela desbloqueada.")))
+}
+
+async fn onboarding_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let token = extract_bearer_token(&headers)?;
+    let (user_id, _email, _full_name) = auth_service::validate_session(&state.auth_db, &token)
+        .await
+        .map_err(|e| AppError::unauthorized(e))?;
+
+    auth_service::set_onboarding_completed(&state.auth_db, &user_id)
+        .await
+        .map_err(|e| AppError::internal(e))?;
+
+    Ok(Json(ActionResponse::<()>::success_empty(
+        "Onboarding concluido.",
+    )))
 }
 
 fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AppError> {

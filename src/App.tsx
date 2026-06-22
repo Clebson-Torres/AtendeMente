@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { onAuthChange, restoreSession, lock } from "./lib/auth";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import OnboardingFlow from "./pages/OnboardingFlow";
 import Dashboard from "./pages/Dashboard";
 import Patients from "./pages/Patients";
 import PatientDetail from "./pages/PatientDetail";
@@ -19,6 +20,7 @@ import Skeleton from "./components/ui/Skeleton";
 export interface AuthUser {
   uid: string;
   email: string | null;
+  onboarding_completed: boolean;
 }
 
 interface AuthCtx {
@@ -33,6 +35,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex h-screen items-center justify-center"><Skeleton className="h-8 w-48" /></div>;
   if (!user) return <Navigate to="/login" replace />;
+  if (!user.onboarding_completed) return <Navigate to="/onboarding" replace />;
   return <>{children}</>;
 }
 
@@ -93,6 +96,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/onboarding" element={<OnboardingFlow />} />
         <Route
           path="/*"
           element={

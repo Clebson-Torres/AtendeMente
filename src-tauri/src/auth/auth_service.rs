@@ -16,8 +16,10 @@ pub struct AuthResult {
     pub full_name: String,
     pub token: String,
     pub recovery_secret: String,
+    pub onboarding_completed: bool,
 }
 
+#[derive(Debug)]
 pub struct RecoveryResult {
     pub user_id: String,
     pub reset_token: String,
@@ -41,11 +43,12 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, String> {
         .is_ok())
 }
 
-/// Generate a recovery secret (32 random bytes, base64 encoded)
+/// Generate a recovery secret (8 random bytes → 16 hex chars, format XXXX-XXXX-XXXX-XXXX)
 pub fn generate_recovery_secret() -> String {
-    let mut bytes = [0u8; 32];
+    let mut bytes = [0u8; 8];
     OsRng.fill_bytes(&mut bytes);
-    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    let hex_str: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    format!("{}-{}-{}-{}", &hex_str[0..4], &hex_str[4..8], &hex_str[8..12], &hex_str[12..16])
 }
 
 /// Hash the recovery secret for storage
@@ -144,7 +147,41 @@ pub async fn register(
         full_name,
         token,
         recovery_secret,
+        onboarding_completed: false,
     })
+}
+
+/// Get onboarding status for a user
+pub async fn get_onboarding_status(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<bool, String> {
+    let result = sqlx::query_scalar::<_, i64>(
+        "SELECT onboarding_completed FROM auth_users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| format!("Erro ao buscar status de onboarding: {}", e))?
+    .ok_or_else(|| "Usuário não encontrado.".to_string())?;
+
+    Ok(result == 1)
+}
+
+/// Mark onboarding as completed for a user
+pub async fn set_onboarding_completed(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE auth_users SET onboarding_completed = 1, updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(user_id)
+    .execute(db)
+    .await
+    .map_err(|e| format!("Erro ao atualizar onboarding: {}", e))?;
+
+    Ok(())
 }
 
 pub async fn login(
@@ -157,8 +194,8 @@ pub async fn login(
         return Err("Email e senha são obrigatórios.".into());
     }
 
-    let row = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT id, password_hash, full_name FROM auth_users WHERE email = ?",
+    let row = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT id, password_hash, full_name, onboarding_completed FROM auth_users WHERE email = ?",
     )
     .bind(&email)
     .fetch_optional(db)
@@ -166,7 +203,7 @@ pub async fn login(
     .map_err(|e| format!("Erro ao buscar usuario: {}", e))?
     .ok_or_else(|| "Email ou senha inválidos.".to_string())?;
 
-    let (user_id, password_hash, full_name) = row;
+    let (user_id, password_hash, full_name, onboarding_completed) = row;
 
     if !verify_password(password, &password_hash)? {
         return Err("Email ou senha inválidos.".into());
@@ -204,6 +241,7 @@ pub async fn login(
         full_name,
         token,
         recovery_secret: String::new(),
+        onboarding_completed: onboarding_completed == 1,
     })
 }
 
@@ -273,13 +311,24 @@ pub async fn verify_user_password(
     verify_password(password, &row)
 }
 
+/// Look up a user's ID by their email address
+pub async fn find_user_id_by_email(db: &SqlitePool, email: &str) -> Result<String, String> {
+    let email = email.trim().to_lowercase();
+    sqlx::query_scalar::<_, String>("SELECT id FROM auth_users WHERE email = ?")
+        .bind(&email)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| format!("Erro ao buscar email: {}", e))?
+        .ok_or_else(|| "Nenhuma conta encontrada com este email.".to_string())
+}
+
 /// Start password recovery using recovery file secret
 pub async fn recover_with_secret(
     db: &SqlitePool,
     user_id: &str,
     recovery_secret: &str,
 ) -> Result<RecoveryResult, String> {
-    let row = sqlx::query_as::<_, (String,)>(
+    let row = sqlx::query_as::<_, (Option<String>,)>(
         "SELECT recovery_secret_hash FROM auth_users WHERE id = ?",
     )
     .bind(user_id)
@@ -288,7 +337,10 @@ pub async fn recover_with_secret(
     .map_err(|e| format!("Erro ao buscar usuario: {}", e))?
     .ok_or_else(|| "Usuário não encontrado.".to_string())?;
 
-    let stored_hash = row.0;
+    let stored_hash = row.0.ok_or_else(|| {
+        "Este código de recuperação já foi utilizado. Cada código só pode ser usado uma vez.".to_string()
+    })?;
+
     let computed_hash = hash_recovery_secret(recovery_secret);
 
     if stored_hash != computed_hash {
@@ -362,7 +414,7 @@ pub async fn reset_password(
     let password_hash = hash_password(new_password)?;
 
     sqlx::query(
-        "UPDATE auth_users SET password_hash = ?, recovery_secret_hash = NULL, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE auth_users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&password_hash)
     .bind(&user_id)

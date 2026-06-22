@@ -5,10 +5,11 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
+use argon2::Argon2;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use hkdf::Hkdf;
 use rand::RngCore;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use crate::errors::AppError;
 
@@ -67,7 +68,7 @@ pub fn clear_user_crypto(user_id: &str) {
     }
 }
 
-fn load_key(user_id: &str) -> Result<[u8; 32], AppError> {
+pub fn load_key(user_id: &str) -> Result<[u8; 32], AppError> {
     user_keys()
         .lock()
         .map_err(|_| AppError::internal("Erro ao acessar cache de chaves."))?
@@ -140,6 +141,109 @@ pub fn decrypt_content(payload: &EncryptedPayload, user_id: &str) -> Result<Stri
     decrypt_content_with_key(payload, &key)
 }
 
+pub fn pepper_fingerprint() -> Result<String, AppError> {
+    let pepper = MASTER_PEPPER
+        .get()
+        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
+    let mut hasher = Sha256::new();
+    hasher.update(pepper);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32], AppError> {
+    let mut key = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .map_err(|e| AppError::internal(format!("Erro ao derivar chave: {}", e)))?;
+    Ok(key)
+}
+
+pub fn encrypt_file(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| AppError::internal("Failed to create cipher."))?;
+
+    let mut iv = [0u8; 12];
+    OsRng.fill_bytes(&mut iv);
+    let nonce = Nonce::from_slice(&iv);
+
+    let ciphertext = cipher
+        .encrypt(nonce, data)
+        .map_err(|e| AppError::internal(format!("Encryption failed: {}", e)))?;
+
+    let mut result = Vec::with_capacity(1 + 12 + ciphertext.len());
+    result.push(0x01);
+    result.extend_from_slice(&iv);
+    result.extend_from_slice(&ciphertext);
+    Ok(result)
+}
+
+pub fn decrypt_file(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
+    if data.first() != Some(&0x01) || data.len() < 29 {
+        return Ok(data.to_vec());
+    }
+    let (_, rest) = data.split_at(1);
+    let (iv_bytes, ciphertext) = rest.split_at(12);
+    let nonce = Nonce::from_slice(iv_bytes);
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| AppError::internal("Failed to create cipher."))?;
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| AppError::bad_request("Falha ao descriptografar arquivo."))
+}
+
+pub async fn reencrypt_all_pii(
+    db: &sqlx::SqlitePool,
+    old_pepper: &[u8; 32],
+    user_id: &str,
+) -> Result<(), AppError> {
+    let current_pepper = MASTER_PEPPER
+        .get()
+        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
+
+    if old_pepper == current_pepper {
+        return Ok(());
+    }
+
+    let rows: Vec<(String, String, String, String, i32)> = sqlx::query_as(
+        r#"SELECT id, pii_encrypted, pii_iv, pii_auth_tag, COALESCE(key_version, 1)
+        FROM patients WHERE user_id = ? AND pii_encrypted IS NOT NULL"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler PII: {}", e)))?;
+
+    let old_key = derive_key_inner(user_id, old_pepper)?;
+    let new_key = derive_key_inner(user_id, current_pepper)?;
+
+    for (id, enc, iv, tag, kv) in &rows {
+        let payload = EncryptedPayload {
+            encrypted_payload: enc.clone(),
+            iv: iv.clone(),
+            auth_tag: tag.clone(),
+            key_version: *kv,
+        };
+        let plaintext = decrypt_content_with_key(&payload, &old_key)?;
+        let new_payload = encrypt_content_with_key(&plaintext, &new_key)?;
+        sqlx::query(
+            r#"UPDATE patients SET pii_encrypted = ?, pii_iv = ?, pii_auth_tag = ? WHERE id = ?"#,
+        )
+        .bind(&new_payload.encrypted_payload)
+        .bind(&new_payload.iv)
+        .bind(&new_payload.auth_tag)
+        .bind(id)
+        .execute(db)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao atualizar PII: {}", e)))?;
+    }
+
+    Ok(())
+}
+
+pub fn get_pepper() -> Option<&'static [u8; 32]> {
+    MASTER_PEPPER.get()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +309,57 @@ mod tests {
         let bad_key = wrong_key();
         let encrypted = encrypt_content_with_key("dados", &key).unwrap();
         assert!(decrypt_content_with_key(&encrypted, &bad_key).is_err());
+    }
+
+    #[test]
+    fn test_encrypt_file_roundtrip() {
+        let key = test_key();
+        let data = b"Hello, encrypted file!";
+        let encrypted = encrypt_file(data, &key).unwrap();
+        assert_eq!(encrypted.first(), Some(&0x01));
+        assert!(encrypted.len() > data.len());
+        let decrypted = decrypt_file(&encrypted, &key).unwrap();
+        assert_eq!(decrypted, data);
+    }
+
+    #[test]
+    fn test_decrypt_file_legacy() {
+        let key = test_key();
+        let legacy = b"This is a legacy plaintext file";
+        let result = decrypt_file(legacy, &key).unwrap();
+        assert_eq!(result, legacy);
+    }
+
+    #[test]
+    fn test_decrypt_file_too_short() {
+        let key = test_key();
+        let short = vec![0x01, 0x02, 0x03];
+        let result = decrypt_file(&short, &key).unwrap();
+        assert_eq!(result, short);
+    }
+
+    #[test]
+    fn test_pepper_fingerprint() {
+        set_pepper(&[0xabu8; 32]);
+        let fp = pepper_fingerprint().unwrap();
+        assert_eq!(fp.len(), 64);
+        // Same pepper = same fingerprint
+        let fp2 = pepper_fingerprint().unwrap();
+        assert_eq!(fp, fp2);
+    }
+
+    #[test]
+    fn test_derive_key_from_password() {
+        let key1 = derive_key_from_password("minha-senha", b"0123456789abcdef").unwrap();
+        assert_eq!(key1.len(), 32);
+        // Same password + salt = same key
+        let key2 = derive_key_from_password("minha-senha", b"0123456789abcdef").unwrap();
+        assert_eq!(key1, key2);
+        // Different salt = different key
+        let key3 = derive_key_from_password("minha-senha", b"fedcba9876543210").unwrap();
+        assert_ne!(key1, key3);
+        // Different password = different key
+        let key4 = derive_key_from_password("outra-senha", b"0123456789abcdef").unwrap();
+        assert_ne!(key1, key4);
     }
 }

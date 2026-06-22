@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::audit;
 use crate::config::{AppConfig, MAX_UPLOAD_SIZE_BYTES};
+use crate::crypto;
 use crate::db::models::{FileUploadRequest, RecordFile};
 use crate::errors::AppError;
 
@@ -206,7 +207,13 @@ pub async fn write_upload_content(
             .map_err(|e| AppError::internal(format!("Failed to create dir: {}", e)))?;
     }
 
-    tokio::fs::write(&file.storage_path, data)
+    let encrypted = match crypto::load_key(user_id) {
+        Ok(key) => crypto::encrypt_file(data, &key)
+            .map_err(|e| AppError::internal(format!("Failed to encrypt file: {}", e)))?,
+        Err(_) => data.to_vec(),
+    };
+
+    tokio::fs::write(&file.storage_path, &encrypted)
         .await
         .map_err(|e| AppError::internal(format!("Failed to write file: {}", e)))?;
 
@@ -229,19 +236,22 @@ pub async fn confirm_upload(
     .map_err(|e| AppError::internal(format!("DB error: {}", e)))?
     .ok_or_else(|| AppError::not_found("Arquivo nao encontrado."))?;
 
-    // Verify file exists on disk
+    // Verify file exists on disk and read it
     let path = std::path::Path::new(&file.storage_path);
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
-        Err(_) => {
-            return Err(AppError::bad_request(
-                "Arquivo nao encontrado no armazenamento. Faca o upload novamente.",
-            ));
-        }
+    let raw = tokio::fs::read(path).await
+        .map_err(|_| AppError::bad_request(
+            "Arquivo nao encontrado no armazenamento. Faca o upload novamente.",
+        ))?;
+
+    // Decrypt if encrypted
+    let data = match crypto::load_key(user_id) {
+        Ok(key) => crypto::decrypt_file(&raw, &key)
+            .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?,
+        Err(_) => raw,
     };
 
-    // Verify size matches and max size
-    if metadata.len() != file.byte_size as u64 {
+    // Verify plaintext size matches declared size
+    if data.len() != file.byte_size as usize {
         let _ = tokio::fs::remove_file(path).await;
         sqlx::query("UPDATE record_files SET deleted_at = datetime('now') WHERE id = ? AND user_id = ?")
             .bind(file_id)
@@ -254,7 +264,7 @@ pub async fn confirm_upload(
         ));
     }
 
-    if metadata.len() > MAX_UPLOAD_SIZE_BYTES {
+    if data.len() > MAX_UPLOAD_SIZE_BYTES as usize {
         let _ = tokio::fs::remove_file(path).await;
         sqlx::query("UPDATE record_files SET deleted_at = datetime('now') WHERE id = ? AND user_id = ?")
             .bind(file_id)
@@ -268,8 +278,6 @@ pub async fn confirm_upload(
     }
 
     // Validate magic bytes
-    let data = tokio::fs::read(path).await
-        .map_err(|_| AppError::internal("Erro ao ler arquivo para validacao."))?;
     validate_file_content(&data, &file.original_name, &file.mime_type)?;
 
     // Audit log
@@ -309,9 +317,15 @@ pub async fn download_file(
     .ok_or_else(|| AppError::not_found("Arquivo nao encontrado."))?;
 
     let path = std::path::Path::new(&file.storage_path);
-    let data = tokio::fs::read(path)
+    let raw = tokio::fs::read(path)
         .await
         .map_err(|_| AppError::not_found("Arquivo nao encontrado no disco."))?;
+
+    let data = match crypto::load_key(user_id) {
+        Ok(key) => crypto::decrypt_file(&raw, &key)
+            .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?,
+        Err(_) => raw,
+    };
 
     audit::write_audit_log(
         db,

@@ -2,7 +2,13 @@ import { API } from "./api-base";
 
 // ─── State ───────────────────────────────────────────────────────────────
 
-type AuthUser = { uid: string; email: string | null } | null;
+export interface AuthUserInfo {
+  uid: string;
+  email: string | null;
+  onboarding_completed: boolean;
+}
+
+type AuthUser = AuthUserInfo | null;
 type AuthCallback = (user: AuthUser) => void;
 
 let currentUser: AuthUser = null;
@@ -61,6 +67,22 @@ function clearToken() {
   _token = null;
 }
 
+// ─── Pending recovery secret (for onboarding after register) ────────────
+
+let _pendingRecoverySecret: string | null = null;
+
+export function getPendingRecoverySecret(): string | null {
+  return _pendingRecoverySecret;
+}
+
+function setPendingRecoverySecret(secret: string) {
+  _pendingRecoverySecret = secret;
+}
+
+export function clearPendingRecoverySecret() {
+  _pendingRecoverySecret = null;
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────
 
 export function onAuthChange(cb: AuthCallback): () => void {
@@ -77,10 +99,15 @@ export async function login(email: string, password: string): Promise<void> {
     user_id: string;
     email: string;
     full_name: string;
+    onboarding_completed: boolean;
   }>("/auth/login", { email, password });
 
   storeToken(data.token);
-  notify({ uid: data.user_id, email: data.email });
+  notify({
+    uid: data.user_id,
+    email: data.email,
+    onboarding_completed: data.onboarding_completed,
+  });
 }
 
 /** Complete authentication from stored token after registration */
@@ -88,8 +115,12 @@ export async function completeFromStoredToken(): Promise<void> {
   const token = getStoredToken();
   if (!token) return;
   try {
-    const data = await apiRequest<{ user_id: string; email: string }>("/auth/me");
-    notify({ uid: data.user_id, email: data.email });
+    const data = await apiRequest<{ user_id: string; email: string; onboarding_completed: boolean }>("/auth/me");
+    notify({
+      uid: data.user_id,
+      email: data.email,
+      onboarding_completed: data.onboarding_completed,
+    });
   } catch {
     clearToken();
   }
@@ -109,14 +140,44 @@ export async function register(
     email: string;
     full_name: string;
     recovery_secret: string;
+    onboarding_completed: boolean;
   }>("/auth/register", { email, password, full_name: fullName });
 
   storeToken(data.token);
+  setPendingRecoverySecret(data.recovery_secret);
+  notify({
+    uid: data.user_id,
+    email: data.email,
+    onboarding_completed: data.onboarding_completed,
+  });
 
   return {
     user_id: data.user_id,
     recovery_secret: data.recovery_secret,
   };
+}
+
+export async function completeOnboarding(): Promise<void> {
+  const token = getStoredToken();
+  if (token) {
+    try {
+      const res = await fetch(`${API}/auth/onboarding`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      });
+      if (!res.ok) {
+        console.warn("Onboarding completion not persisted on server (PATCH returned %d)", res.status);
+      }
+    } catch {
+      console.warn("Onboarding completion PATCH request failed (network/CORS)");
+    }
+  }
+
+  if (currentUser) {
+    notify({ ...currentUser, onboarding_completed: true });
+  }
+
+  clearPendingRecoverySecret();
 }
 
 export async function logout() {
@@ -145,13 +206,9 @@ export function getCurrentToken(): string | null {
 }
 
 export async function recoverPassword(
-  userId: string,
-  recoverySecret: string
+  payload: { user_id: string; recovery_secret: string } | { email: string; recovery_secret: string }
 ): Promise<string> {
-  const data = await apiRequest<{ reset_token: string }>("/auth/recover", {
-    user_id: userId,
-    recovery_secret: recoverySecret,
-  });
+  const data = await apiRequest<{ reset_token: string }>("/auth/recover", payload);
   return data.reset_token;
 }
 

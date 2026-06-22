@@ -273,25 +273,27 @@ export const api = {
     request<DashboardData>("/dashboard"),
 
   backup: {
-    create: async (): Promise<{ blob: Blob; fileName: string }> => {
+    create: async (password?: string): Promise<{ blob: Blob; fileName: string }> => {
       const token = getCurrentToken();
       const res = await fetch(`${API}/backup`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ password: password || null }),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
         throw new Error(json.message || "Erro ao criar backup");
       }
       const disposition = res.headers.get("content-disposition");
-      const fileName = disposition?.match(/filename="?(.+?)"?$/)?.[1] || `backup_${Date.now()}.zip`;
+      const ext = password ? "atendemente" : "zip";
+      const fileName = disposition?.match(/filename="?(.+?)"?$/)?.[1] || `backup_${Date.now()}.${ext}`;
       const blob = await res.blob();
       return { blob, fileName };
     },
-    restore: (backupBase64: string) =>
+    restore: (backupBase64: string, password?: string) =>
       request<{ version: number; entries: number }>("/backup/restore", {
         method: "POST",
-        body: JSON.stringify({ backup_base64: backupBase64 }),
+        body: JSON.stringify({ backup_base64: backupBase64, password: password || null }),
       }),
     getConfig: () =>
       request<BackupConfigData>("/backup/config"),

@@ -154,6 +154,14 @@ async fn network_info(
 #[derive(Deserialize)]
 struct RestoreInput {
     backup_base64: String,
+    #[serde(default)]
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CreateBackupInput {
+    #[serde(default)]
+    password: Option<String>,
 }
 
 // ─── Backup Config ──────────────────────────────────────────────────────────
@@ -196,15 +204,21 @@ async fn set_backup_config_handler(
 async fn create_backup_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Json(input): Json<CreateBackupInput>,
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let bundle = features::backup::create_backup(&db, &state.config, &user.id).await?;
+    let bundle = if let Some(pass) = &input.password {
+        features::backup::create_backup_with_password(&db, &state.config, &user.id, Some(pass)).await?
+    } else {
+        features::backup::create_backup(&db, &state.config, &user.id).await?
+    };
     let _ = features::backup::touch_backup_timestamp(&db, &user.id).await;
+    let content_type = if bundle.encrypted { "application/octet-stream" } else { "application/zip" };
     Ok((
         axum::http::StatusCode::OK,
         [
-            (axum::http::HeaderName::from_static("content-type"), "application/zip".into()),
+            (axum::http::HeaderName::from_static("content-type"), content_type.into()),
             (axum::http::HeaderName::from_static("content-disposition"), format!("attachment; filename=\"{}\"", bundle.file_name)),
         ],
         bundle.bytes,
@@ -219,7 +233,11 @@ async fn restore_backup_handler(
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let data = base64_decode(&input.backup_base64)?;
-    let manifest = features::backup::restore_backup(&db, &state.config, &user.id, &data).await?;
+    let manifest = if let Some(pass) = &input.password {
+        features::backup::restore_backup_with_password(&db, &state.config, &user.id, &data, Some(pass)).await?
+    } else {
+        features::backup::restore_backup(&db, &state.config, &user.id, &data).await?
+    };
     Ok(Json(ActionResponse::success("Backup restaurado com sucesso.", serde_json::json!({
         "version": manifest.version,
         "entries": manifest.file_hashes.len(),
