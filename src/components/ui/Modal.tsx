@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { X } from "lucide-react";
 
@@ -18,9 +18,20 @@ const widths = {
 };
 
 export default function Modal({ open, onClose, title, children, size = "md" }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<Element | null>(null);
+
   useEffect(() => {
-    if (open) document.body.style.overflow = "hidden";
-    else document.body.style.overflow = "";
+    if (open) {
+      previousActiveElement.current = document.activeElement;
+      document.body.style.overflow = "hidden";
+      dialogRef.current?.focus();
+    } else {
+      document.body.style.overflow = "";
+      if (previousActiveElement.current instanceof HTMLElement) {
+        previousActiveElement.current.focus();
+      }
+    }
     const handleEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     if (open) window.addEventListener("keydown", handleEsc);
     return () => {
@@ -32,18 +43,26 @@ export default function Modal({ open, onClose, title, children, size = "md" }: P
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
-      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+    >
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" aria-hidden="true" />
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={cn(
-          "relative app-surface animate-fade-in max-h-[90vh] m-4",
+          "relative app-surface animate-fade-in max-h-[90vh] m-4 outline-none",
           widths[size],
         )}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="overflow-auto max-h-[90vh] [scrollbar-gutter:stable] rounded-[28px]">
           <div className="flex items-center justify-between px-6 pt-6 pb-2">
-            <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+            <h2 id="modal-title" className="text-lg font-semibold text-slate-900">{title}</h2>
             <button onClick={onClose} aria-label="Fechar" className="text-muted-foreground hover:text-foreground transition-colors rounded-full h-8 w-8 flex items-center justify-center hover:bg-secondary"><X className="h-5 w-5" /></button>
           </div>
           <div className="p-6">{children}</div>

@@ -312,6 +312,8 @@ export const api = {
         method: "PUT",
         body: JSON.stringify({ enabled }),
       }),
+    getNetworkInfo: () =>
+      request<{ ipv4: string[]; ipv6: string[]; port: number }>("/network-info"),
   },
 };
 

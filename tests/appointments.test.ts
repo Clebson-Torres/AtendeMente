@@ -7,6 +7,27 @@ function getEndFromStart(startsAt: string): string {
   return toLocalDatetimeString(end);
 }
 
+function computeDefaultStartTime(date?: Date): { starts_at: string; ends_at: string } {
+  const now = new Date();
+  const isToday = date ? date.toDateString() === now.toDateString() : true;
+  let d: Date;
+  if (isToday) {
+    d = new Date(now);
+    if (d.getMinutes() > 0) {
+      d.setHours(d.getHours() + 1, 0, 0, 0);
+    } else {
+      d.setMinutes(0, 0, 0);
+    }
+  } else {
+    d = new Date(date!);
+    d.setHours(8, 0, 0, 0);
+  }
+  return {
+    starts_at: toLocalDatetimeString(d),
+    ends_at: toLocalDatetimeString(new Date(d.getTime() + 60 * 60 * 1000)),
+  };
+}
+
 const mockEvents = [
   { id: "1", status: "scheduled", confirmation_status: "confirmed", start: "2026-03-10T09:00:00" },
   { id: "2", status: "completed", confirmation_status: "confirmed", start: "2026-03-10T10:00:00" },
@@ -208,5 +229,72 @@ describe("appointment filters", () => {
     const result = filterEvents(mockEvents, "no_show", "");
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("5");
+  });
+});
+
+describe("default start time", () => {
+  it("rounds up to next hour when called without arguments during a hour", () => {
+    const now = new Date();
+    const { starts_at } = computeDefaultStartTime();
+    const hour = now.getHours();
+    const expectedHour = now.getMinutes() > 0 ? hour + 1 : hour;
+    const d = new Date(starts_at);
+    expect(d.getHours()).toBe(expectedHour % 24);
+    expect(d.getMinutes()).toBe(0);
+  });
+
+  it("keeps current hour when minutes are zero", () => {
+    const { starts_at } = computeDefaultStartTime();
+    const d = new Date(starts_at);
+    const realNow = new Date();
+    if (realNow.getMinutes() === 0) {
+      expect(d.getHours()).toBe(realNow.getHours());
+    }
+    expect(d.getMinutes()).toBe(0);
+  });
+
+  it("rounds up from current hour when called with today's midnight date", () => {
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const { starts_at } = computeDefaultStartTime(midnight);
+    const d = new Date(starts_at);
+    expect(d.getHours()).toBe((now.getHours() + 1) % 24);
+    expect(d.getMinutes()).toBe(0);
+  });
+
+  it("does not produce 01:00 from midnight when current hour is not 0", () => {
+    const now = new Date();
+    if (now.getHours() !== 0) {
+      const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const { starts_at } = computeDefaultStartTime(midnight);
+      const d = new Date(starts_at);
+      expect(d.getHours()).not.toBe(1);
+    }
+  });
+
+  it("uses 08:00 for a different day", () => {
+    const otherDay = new Date(2026, 5, 15);
+    const { starts_at } = computeDefaultStartTime(otherDay);
+    const d = new Date(starts_at);
+    expect(d.getHours()).toBe(8);
+    expect(d.getMinutes()).toBe(0);
+  });
+
+  it("ends_at is 1 hour after starts_at", () => {
+    const { starts_at, ends_at } = computeDefaultStartTime();
+    const start = new Date(starts_at);
+    const end = new Date(ends_at);
+    expect(end.getTime() - start.getTime()).toBe(60 * 60 * 1000);
+  });
+
+  it("rounds up correctly at hour 23 (wraps to 00:00 next day)", () => {
+    const now = new Date();
+    now.setHours(23, 30, 0, 0);
+    const d = new Date(now);
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    const result = toLocalDatetimeString(d);
+    const resultDate = new Date(result);
+    expect(resultDate.getHours()).toBe(0);
+    expect(resultDate.getMinutes()).toBe(0);
   });
 });

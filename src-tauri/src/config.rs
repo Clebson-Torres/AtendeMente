@@ -19,9 +19,9 @@ pub struct AppConfig {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-struct ConfigFile {
+pub struct ConfigFile {
     master_pepper: Option<String>,
-    mobile_access_enabled: Option<bool>,
+    pub mobile_access_enabled: Option<bool>,
 }
 
 fn config_path() -> PathBuf {
@@ -34,7 +34,7 @@ fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
-fn load_config_file() -> Result<ConfigFile, Box<dyn std::error::Error>> {
+pub fn load_config_file() -> Result<ConfigFile, Box<dyn std::error::Error>> {
     let path = config_path();
     if path.exists() {
         let content = std::fs::read_to_string(&path)?;

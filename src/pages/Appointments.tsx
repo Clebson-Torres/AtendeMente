@@ -71,7 +71,7 @@ export default function Appointments() {
     try {
       const start = `${year}-${String(month + 1).padStart(2, "0")}-01`;
       const endDate = new Date(year, month + 1, 0);
-      const end = `${year}-${String(month + 1).padStart(2, "0")}-${String(endDate.getDate()).padStart(2, "0")}`;
+      const end = `${year}-${String(month + 1).padStart(2, "0")}-${String(endDate.getDate()).padStart(2, "0")}T23:59:59`;
       const data = await api.appointments.calendar(start, end);
       setEvents(data);
     } catch (e: any) {
@@ -89,15 +89,19 @@ export default function Appointments() {
       api.patients.list().then((result) => {
         setPatients(result.items.filter((p) => p.status === "active"));
       }).catch(() => setPatients([]));
-      const d = new Date();
       const now = new Date();
-      const isToday = d.toDateString() === now.toDateString();
-      if (isToday && now.getMinutes() > 0) {
-        d.setHours(d.getHours() + 1, 0, 0, 0);
-      } else if (!isToday) {
-        d.setHours(8, 0, 0, 0);
+      const isToday = true;
+      let d: Date;
+      if (isToday) {
+        d = new Date(now);
+        if (d.getMinutes() > 0) {
+          d.setHours(d.getHours() + 1, 0, 0, 0);
+        } else {
+          d.setMinutes(0, 0, 0);
+        }
       } else {
-        d.setMinutes(0, 0, 0);
+        d = new Date(now);
+        d.setHours(8, 0, 0, 0);
       }
       reset({
         patient_id: patientId,
@@ -135,15 +139,19 @@ export default function Appointments() {
       setPatients(result.items.filter((p) => p.status === "active"));
     } catch { setPatients([]); }
 
-    const d = date || new Date();
     const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    if (isToday && now.getMinutes() > 0) {
-      d.setHours(d.getHours() + 1, 0, 0, 0);
-    } else if (!isToday) {
-      d.setHours(8, 0, 0, 0);
+    const isToday = date ? date.toDateString() === now.toDateString() : true;
+    let d: Date;
+    if (isToday) {
+      d = new Date(now);
+      if (d.getMinutes() > 0) {
+        d.setHours(d.getHours() + 1, 0, 0, 0);
+      } else {
+        d.setMinutes(0, 0, 0);
+      }
     } else {
-      d.setMinutes(0, 0, 0);
+      d = new Date(date!);
+      d.setHours(8, 0, 0, 0);
     }
     reset({
       patient_id: "",

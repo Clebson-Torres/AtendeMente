@@ -41,7 +41,7 @@ async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
   return json.data;
 }
 
-// ─── Token management (in-memory only — lost on app close) ───────────────
+// ─── Token management (sessionStorage — persists on F5, cleared on tab close) ──
 
 let _token: string | null = null;
 
@@ -56,15 +56,25 @@ if (
 }
 
 function getStoredToken(): string | null {
+  if (_token) return _token;
+  if (typeof window !== "undefined") {
+    _token = sessionStorage.getItem("token");
+  }
   return _token;
 }
 
 function storeToken(token: string) {
   _token = token;
+  if (typeof window !== "undefined") {
+    sessionStorage.setItem("token", token);
+  }
 }
 
 function clearToken() {
   _token = null;
+  if (typeof window !== "undefined") {
+    sessionStorage.removeItem("token");
+  }
 }
 
 // ─── Pending recovery secret (for onboarding after register) ────────────
@@ -125,9 +135,6 @@ export async function completeFromStoredToken(): Promise<void> {
     clearToken();
   }
 }
-
-// Clean up any stale token in localStorage (legacy from Firebase)
-localStorage.removeItem("token");
 
 export async function register(
   email: string,

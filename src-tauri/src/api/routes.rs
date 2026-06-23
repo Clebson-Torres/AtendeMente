@@ -127,20 +127,24 @@ struct MobileAccessInput {
 }
 
 async fn get_mobile_access(
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
-) -> Json<ActionResponse<MobileAccessResponse>> {
-    Json(ActionResponse::success("", MobileAccessResponse {
-        enabled: state.config.mobile_access_enabled,
-    }))
+) -> Result<Json<ActionResponse<MobileAccessResponse>>, AppError> {
+    let _user = get_authenticated_user(&headers, &state).await?;
+    let cfg = crate::config::load_config_file().unwrap_or_default();
+    let enabled = cfg.mobile_access_enabled.unwrap_or(false);
+    Ok(Json(ActionResponse::success("", MobileAccessResponse {
+        enabled,
+    })))
 }
 
 async fn set_mobile_access(
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
     Json(input): Json<MobileAccessInput>,
 ) -> Result<Json<ActionResponse<MobileAccessResponse>>, AppError> {
-    if input.enabled != state.config.mobile_access_enabled {
-        crate::config::set_mobile_access_enabled(input.enabled);
-    }
+    let _user = get_authenticated_user(&headers, &state).await?;
+    crate::config::set_mobile_access_enabled(input.enabled);
     Ok(Json(ActionResponse::success("", MobileAccessResponse {
         enabled: input.enabled,
     })))
@@ -156,8 +160,10 @@ struct NetworkInfo {
 }
 
 async fn network_info(
+    headers: HeaderMap,
     State(state): State<Arc<AppState>>,
-) -> Json<ActionResponse<NetworkInfo>> {
+) -> Result<Json<ActionResponse<NetworkInfo>>, AppError> {
+    let _user = get_authenticated_user(&headers, &state).await?;
     let mut v4 = Vec::new();
     let mut v6 = Vec::new();
 
@@ -175,11 +181,11 @@ async fn network_info(
         }
     }
 
-    Json(ActionResponse::success("", NetworkInfo {
+    Ok(Json(ActionResponse::success("", NetworkInfo {
         ipv4: v4,
         ipv6: v6,
         port: state.config.server_port,
-    }))
+    })))
 }
 
 // ─── Backup ─────────────────────────────────────────────────────────────────
@@ -246,7 +252,7 @@ async fn create_backup_handler(
     } else {
         features::backup::create_backup(&db, &state.config, &user.id).await?
     };
-    let _ = features::backup::touch_backup_timestamp(&db, &user.id).await;
+    features::backup::touch_backup_timestamp(&db, &user.id).await?;
     let content_type = if bundle.encrypted { "application/octet-stream" } else { "application/zip" };
     Ok((
         axum::http::StatusCode::OK,

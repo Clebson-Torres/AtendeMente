@@ -72,12 +72,14 @@ export default function ImportPatientsModal({ open, onClose, onImported }: Props
 
     try {
       const text = await file.text();
-      const base64 = btoa(unescape(encodeURIComponent(text)));
+      const bytes = new TextEncoder().encode(text);
+      const base64 = btoa(bytes.reduce((s, b) => s + String.fromCharCode(b), ""));
       const result = await api.patients.importPreview(base64);
       setPreview(result.preview);
       setSessionId(result.session_id);
-    } catch (e: any) {
-      toast(e.message, "error");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Erro ao importar";
+      toast(message, "error");
     } finally {
       setParsing(false);
     }
@@ -95,8 +97,9 @@ export default function ImportPatientsModal({ open, onClose, onImported }: Props
       setDone(true);
       toast(`${result.imported} paciente(s) importado(s) com sucesso.`);
       onImported();
-    } catch (e: any) {
-      toast(e.message, "error");
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Erro ao importar";
+      toast(message, "error");
     } finally {
       setImporting(false);
     }

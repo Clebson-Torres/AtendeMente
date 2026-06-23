@@ -69,7 +69,9 @@ async fn main() {
             let state = state.clone();
 
             tokio::spawn(async move {
-                run_server(state, Some(handle)).await;
+                if let Err(e) = run_server(state, Some(handle)).await {
+                    tracing::error!("Server error: {}", e);
+                }
             });
 
             Ok(())

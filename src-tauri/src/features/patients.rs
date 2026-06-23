@@ -179,55 +179,104 @@ pub async fn list_patients(
     status_filter: Option<&str>,
 ) -> Result<PaginatedData<PatientListItem>, AppError> {
     let offset = (page - 1) * per_page;
-    let status_where = match status_filter {
-        Some(s) if !s.is_empty() => format!(" AND status = '{}'", s),
-        _ => String::new(),
-    };
+    let has_status = status_filter.map(|s| !s.is_empty()).unwrap_or(false);
 
     let (rows, total) = if search.trim().is_empty() {
-        let total: (i64,) = sqlx::query_as(
-            &format!("SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL{}", status_where),
-        )
-        .bind(user_id)
-        .fetch_one(db)
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
+        let total: (i64,) = if has_status {
+            sqlx::query_as(
+                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ?",
+            )
+            .bind(user_id)
+            .bind(status_filter.unwrap())
+            .fetch_one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+        } else {
+            sqlx::query_as(
+                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL",
+            )
+            .bind(user_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+        };
 
-        let rows = sqlx::query_as::<_, PatientRow>(
-            &format!("SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL{} ORDER BY full_name LIMIT ? OFFSET ?", status_where),
-        )
-        .bind(user_id)
-        .bind(per_page)
-        .bind(offset)
-        .fetch_all(db)
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to list patients: {}", e)))?;
+        let rows = if has_status {
+            sqlx::query_as::<_, PatientRow>(
+                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ? ORDER BY full_name LIMIT ? OFFSET ?",
+            )
+            .bind(user_id)
+            .bind(status_filter.unwrap())
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to list patients: {}", e)))?
+        } else {
+            sqlx::query_as::<_, PatientRow>(
+                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL ORDER BY full_name LIMIT ? OFFSET ?",
+            )
+            .bind(user_id)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to list patients: {}", e)))?
+        };
 
         (rows, total.0)
     } else {
         let (name_pattern, token_pattern) = search_where_clause(search);
 
-        let total: (i64,) = sqlx::query_as(
-            &format!("SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL{} AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))", status_where),
-        )
-        .bind(user_id)
-        .bind(&name_pattern)
-        .bind(&token_pattern)
-        .fetch_one(db)
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
+        let total: (i64,) = if has_status {
+            sqlx::query_as(
+                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ? AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))",
+            )
+            .bind(user_id)
+            .bind(status_filter.unwrap())
+            .bind(&name_pattern)
+            .bind(&token_pattern)
+            .fetch_one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+        } else {
+            sqlx::query_as(
+                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))",
+            )
+            .bind(user_id)
+            .bind(&name_pattern)
+            .bind(&token_pattern)
+            .fetch_one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+        };
 
-        let rows = sqlx::query_as::<_, PatientRow>(
-            &format!("SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL{} AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?", status_where),
-        )
-        .bind(user_id)
-        .bind(&name_pattern)
-        .bind(&token_pattern)
-        .bind(per_page)
-        .bind(offset)
-        .fetch_all(db)
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?;
+        let rows = if has_status {
+            sqlx::query_as::<_, PatientRow>(
+                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ? AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?",
+            )
+            .bind(user_id)
+            .bind(status_filter.unwrap())
+            .bind(&name_pattern)
+            .bind(&token_pattern)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?
+        } else {
+            sqlx::query_as::<_, PatientRow>(
+                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?",
+            )
+            .bind(user_id)
+            .bind(&name_pattern)
+            .bind(&token_pattern)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?
+        };
 
         (rows, total.0)
     };

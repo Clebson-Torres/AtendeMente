@@ -22,6 +22,10 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         "Permissions-Policy",
         HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
     );
+    response.headers_mut().insert(
+        "Strict-Transport-Security",
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
 
     response
 }

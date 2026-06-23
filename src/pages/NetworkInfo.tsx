@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 import { Smartphone, Wifi, Copy, Check, WifiOff, Settings as SettingsIcon } from "lucide-react";
 import { toast } from "../components/ui/Toast";
 import Skeleton from "../components/ui/Skeleton";
-import { API } from "../lib/api-base";
+import { api } from "../lib/api";
 import { useNavigate } from "react-router-dom";
 
 interface NetworkInfo {
@@ -22,12 +22,12 @@ export default function NetworkInfoPage() {
 
   useEffect(() => {
     Promise.all([
-      fetch(`${API}/network-info`).then((r) => r.json()),
-      fetch(`${API}/settings/mobile-access`).then((r) => r.json()),
+      api.settings.getNetworkInfo(),
+      api.settings.getMobileAccess(),
     ])
-      .then(([netJson, settingsJson]) => {
-        setInfo(netJson.data);
-        setMobileEnabled(settingsJson.data?.enabled ?? true);
+      .then(([netData, settingsData]) => {
+        setInfo(netData);
+        setMobileEnabled(settingsData.enabled);
         setLoading(false);
       })
       .catch(() => {

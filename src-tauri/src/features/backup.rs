@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use sqlx::{Acquire, SqlitePool};
 use uuid::Uuid;
 use zip::write::FileOptions;
 
@@ -404,18 +404,24 @@ async fn import_database(db: &SqlitePool, source_db_path: &Path) -> Result<(), A
         .filter(|table| source_tables.iter().any(|source| source == table))
         .collect();
 
+    let mut tx = conn.begin().await
+        .map_err(|e| AppError::internal(format!("Erro ao iniciar transacao: {}", e)))?;
+
     for table in &tables {
         sqlx::query(&format!("DELETE FROM {}", table))
-            .execute(&mut *conn)
+            .execute(&mut *tx)
             .await
             .map_err(|e| AppError::internal(format!("Erro ao limpar tabela {}: {}", table, e)))?;
     }
     for table in tables.iter().rev() {
         sqlx::query(&format!("INSERT INTO {} SELECT * FROM backup_src.{}", table, table))
-            .execute(&mut *conn)
+            .execute(&mut *tx)
             .await
             .map_err(|e| AppError::bad_request(format!("Erro ao restaurar tabela {}: {}", table, e)))?;
     }
+
+    tx.commit().await
+        .map_err(|e| AppError::internal(format!("Erro ao confirmar restauracao: {}", e)))?;
 
     sqlx::query("DETACH DATABASE backup_src")
         .execute(&mut *conn)
@@ -541,7 +547,7 @@ pub async fn touch_backup_timestamp(
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     sqlx::query(
         r#"INSERT INTO backup_config (user_id, frequency, last_backup_at, updated_at)
-        VALUES (?, 'manual', ?, datetime('now'))
+        VALUES (?, 'never', ?, datetime('now'))
         ON CONFLICT(user_id) DO UPDATE SET last_backup_at = ?, updated_at = datetime('now')"#,
     )
     .bind(user_id)

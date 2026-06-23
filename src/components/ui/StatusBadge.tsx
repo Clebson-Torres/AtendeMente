@@ -15,6 +15,21 @@ const variants: Record<string, string> = {
   partial: "bg-orange-100 text-orange-800 border-transparent",
 };
 
+const labels: Record<string, string> = {
+  active: "Ativo",
+  inactive: "Inativo",
+  scheduled: "Agendado",
+  confirmed: "Confirmado",
+  unconfirmed: "Nao confirmado",
+  pending: "Pendente",
+  cancelled: "Cancelado",
+  completed: "Concluido",
+  no_show: "Nao compareceu",
+  paid: "Pago",
+  unpaid: "Nao pago",
+  partial: "Parcial",
+};
+
 interface Props {
   status: string;
   className?: string;
@@ -23,6 +38,7 @@ interface Props {
 
 export default function StatusBadge({ status, className, outline }: Props) {
   const style = variants[status.toLowerCase()] || "bg-muted text-muted-foreground border-transparent";
+  const label = labels[status.toLowerCase()] || status;
   return (
     <span
       className={cn(
@@ -31,7 +47,7 @@ export default function StatusBadge({ status, className, outline }: Props) {
         className,
       )}
     >
-      {status}
+      {label}
     </span>
   );
 }

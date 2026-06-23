@@ -1,21 +1,23 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, useRef, createContext, useContext, Suspense, lazy } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { onAuthChange, restoreSession, lock } from "./lib/auth";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
-import OnboardingFlow from "./pages/OnboardingFlow";
-import Dashboard from "./pages/Dashboard";
-import Patients from "./pages/Patients";
-import PatientDetail from "./pages/PatientDetail";
-import Appointments from "./pages/Appointments";
-import AppointmentDetail from "./pages/AppointmentDetail";
-import Payments from "./pages/Payments";
-import NetworkInfo from "./pages/NetworkInfo";
-import Settings from "./pages/Settings";
 import Layout from "./components/Layout";
 import ToastContainer from "./components/ui/Toast";
 import LockScreen from "./components/LockScreen";
 import Skeleton from "./components/ui/Skeleton";
+
+const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
+const OnboardingFlow = lazy(() => import("./pages/OnboardingFlow"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Patients = lazy(() => import("./pages/Patients"));
+const PatientDetail = lazy(() => import("./pages/PatientDetail"));
+const Appointments = lazy(() => import("./pages/Appointments"));
+const AppointmentDetail = lazy(() => import("./pages/AppointmentDetail"));
+const Payments = lazy(() => import("./pages/Payments"));
+const NetworkInfo = lazy(() => import("./pages/NetworkInfo"));
+const Settings = lazy(() => import("./pages/Settings"));
+const NotFound = lazy(() => import("./pages/NotFound"));
 
 export interface AuthUser {
   uid: string;
@@ -45,17 +47,24 @@ export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [locked, setLocked] = useState(false);
+  const isMounted = useRef(true);
 
   useEffect(() => {
+    isMounted.current = true;
     let unsub: (() => void) | null = null;
     restoreSession().finally(() => {
+      if (!isMounted.current) return;
       unsub = onAuthChange((u) => {
+        if (!isMounted.current) return;
         setUser(u);
         setLoading(false);
         if (!u) setLocked(false);
       });
     });
-    return () => { if (unsub) unsub(); };
+    return () => {
+      isMounted.current = false;
+      if (unsub) unsub();
+    };
   }, []);
 
   useEffect(() => {
@@ -93,30 +102,35 @@ export default function App() {
     <AuthContext.Provider value={{ user, loading }}>
       {locked && <LockScreen onUnlock={() => setLocked(false)} />}
       <ToastContainer />
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
-        <Route path="/onboarding" element={<OnboardingFlow />} />
-        <Route
-          path="/*"
-          element={
-            <ProtectedRoute>
-              <Layout>
-                <Routes>
-                  <Route path="/" element={<Dashboard />} />
-                  <Route path="/patients" element={<Patients />} />
-                  <Route path="/patients/:id" element={<PatientDetail />} />
-                  <Route path="/appointments" element={<Appointments />} />
-                  <Route path="/appointments/:id" element={<AppointmentDetail />} />
-                  <Route path="/payments" element={<Payments />} />
-                  <Route path="/network" element={<NetworkInfo />} />
-                  <Route path="/settings" element={<Settings />} />
-                </Routes>
-              </Layout>
-            </ProtectedRoute>
-          }
-        />
-      </Routes>
+      <Suspense fallback={<div className="flex h-screen items-center justify-center"><Skeleton className="h-8 w-48" /></div>}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/onboarding" element={<OnboardingFlow />} />
+          <Route
+            path="/*"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <Suspense fallback={<div className="flex h-64 items-center justify-center"><Skeleton className="h-8 w-48" /></div>}>
+                    <Routes>
+                      <Route path="/" element={<Dashboard />} />
+                      <Route path="/patients" element={<Patients />} />
+                      <Route path="/patients/:id" element={<PatientDetail />} />
+                      <Route path="/appointments" element={<Appointments />} />
+                      <Route path="/appointments/:id" element={<AppointmentDetail />} />
+                      <Route path="/payments" element={<Payments />} />
+                      <Route path="/network" element={<NetworkInfo />} />
+                      <Route path="/settings" element={<Settings />} />
+                      <Route path="*" element={<NotFound />} />
+                    </Routes>
+                  </Suspense>
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </Suspense>
     </AuthContext.Provider>
   );
 }

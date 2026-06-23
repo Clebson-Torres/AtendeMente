@@ -54,4 +54,10 @@
   .animate-fade-in {
     animation: none;
   }
+  .animate-pulse {
+    animation: none;
+  }
+  .animate-spin {
+    animation: none;
+  }
 }

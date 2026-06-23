@@ -159,7 +159,7 @@ fn start_backup_scheduler(state: Arc<AppState>) {
     });
 }
 
-pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
+pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     start_backup_scheduler(state.clone());
     let auth_router = crate::auth::create_auth_router(state.clone());
     let api_routes = api::routes::create_router(state.clone());
@@ -232,9 +232,16 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect("Failed to bind address");
+        .map_err(|e| {
+            tracing::error!("Failed to bind address {}: {}", addr, e);
+            e
+        })?;
 
     axum::serve(listener, app)
         .await
-        .expect("Server failed");
+        .map_err(|e| {
+            tracing::error!("Server failed: {}", e);
+            e
+        })?;
+    Ok(())
 }
