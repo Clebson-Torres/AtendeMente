@@ -154,6 +154,7 @@ mod tests {
             server_port: 3001,
             master_pepper: pepper,
             storage_dir,
+            mobile_access_enabled: false,
         };
 
         let state = Arc::new(AppState {

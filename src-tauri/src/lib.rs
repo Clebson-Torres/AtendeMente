@@ -226,8 +226,9 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) {
                 .allow_credentials(false),
         );
 
-    let addr = format!("0.0.0.0:{}", state.config.server_port);
-    tracing::info!("Starting API server on {}", addr);
+    let bind_ip = if state.config.mobile_access_enabled { "0.0.0.0" } else { "127.0.0.1" };
+    let addr = format!("{}:{}", bind_ip, state.config.server_port);
+    tracing::info!("Starting API server on {} (mobile_access={})", addr, state.config.mobile_access_enabled);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

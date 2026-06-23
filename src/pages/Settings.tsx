@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type BackupConfigData } from "../lib/api";
-import { Shield, Download, Upload, RefreshCw, Lock, Unlock } from "lucide-react";
+import { Shield, Download, Upload, RefreshCw, Lock, Unlock, Smartphone, Wifi, WifiOff } from "lucide-react";
 import Button from "../components/ui/Button";
 import Select from "../components/ui/Select";
 import { downloadFile } from "../lib/utils";
@@ -8,6 +8,9 @@ import { toast } from "../components/ui/Toast";
 
 export default function Settings() {
   const [config, setConfig] = useState<BackupConfigData | null>(null);
+  const [mobileAccess, setMobileAccess] = useState(false);
+  const [mobileAccessLoading, setMobileAccessLoading] = useState(true);
+  const [mobileAccessSaving, setMobileAccessSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -23,14 +26,18 @@ export default function Settings() {
   const pendingRestoreFile = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
-    api.backup.getConfig()
-      .then((c) => {
+    Promise.all([
+      api.backup.getConfig(),
+      api.settings.getMobileAccess(),
+    ])
+      .then(([c, m]) => {
         setConfig(c);
         setAutoEnabled(c.frequency !== "never");
         setFrequency(c.frequency !== "never" ? c.frequency : "daily");
+        setMobileAccess(m.enabled);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { setMobileAccessLoading(false); setLoading(false); });
   }, []);
 
   const handleCreateBackupClick = () => {
@@ -228,6 +235,46 @@ export default function Settings() {
             Ultimo backup: {new Date(config.last_backup_at).toLocaleString("pt-BR")}
           </p>
         )}
+      </div>
+
+      <div className="app-surface p-5 space-y-5">
+        <h2 className="font-display text-lg font-semibold flex items-center gap-2">
+          <Smartphone className="h-5 w-5" />
+          Acesso Mobile
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Permite acessar o AtendeMete pelo celular ou outros dispositivos na rede local.
+        </p>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={mobileAccess}
+              disabled={mobileAccessLoading || mobileAccessSaving}
+              onChange={async (e) => {
+                const enabled = e.target.checked;
+                setMobileAccess(enabled);
+                setMobileAccessSaving(true);
+                try {
+                  await api.settings.setMobileAccess(enabled);
+                  toast(enabled ? "Acesso mobile ativado." : "Acesso mobile desativado.");
+                } catch (err: any) {
+                  setMobileAccess(!enabled);
+                  toast(err.message || "Erro ao salvar", "error");
+                } finally {
+                  setMobileAccessSaving(false);
+                }
+              }}
+              className="h-5 w-9 appearance-none rounded-full bg-gray-300 dark:bg-gray-600 checked:bg-primary transition-colors duration-200 relative cursor-pointer
+                before:absolute before:h-4 before:w-4 before:bg-white before:rounded-full before:top-0.5 before:left-0.5 before:transition-transform before:duration-200
+                checked:before:translate-x-4"
+            />
+            {mobileAccess ? <Wifi className="h-4 w-4 text-green-600" /> : <WifiOff className="h-4 w-4 text-muted-foreground" />}
+            <span className="text-sm font-medium">{mobileAccess ? "Ativado" : "Desativado"}</span>
+          </label>
+          {mobileAccessSaving && <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
       </div>
 
       {showPasswordModal && (

@@ -15,11 +15,13 @@ pub struct AppConfig {
     pub server_port: u16,
     pub master_pepper: [u8; 32],
     pub storage_dir: PathBuf,
+    pub mobile_access_enabled: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Default)]
 struct ConfigFile {
     master_pepper: Option<String>,
+    mobile_access_enabled: Option<bool>,
 }
 
 fn config_path() -> PathBuf {
@@ -30,6 +32,33 @@ fn config_path() -> PathBuf {
         .join(".config")
         .join("atendemente")
         .join("config.toml")
+}
+
+fn load_config_file() -> Result<ConfigFile, Box<dyn std::error::Error>> {
+    let path = config_path();
+    if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        let cfg: ConfigFile = toml::from_str(&content)?;
+        Ok(cfg)
+    } else {
+        Ok(ConfigFile::default())
+    }
+}
+
+fn save_config_file(cfg: &ConfigFile) -> Result<(), Box<dyn std::error::Error>> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string(cfg)?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+pub fn set_mobile_access_enabled(enabled: bool) {
+    let mut cfg = load_config_file().unwrap_or_default();
+    cfg.mobile_access_enabled = Some(enabled);
+    let _ = save_config_file(&cfg);
 }
 
 fn load_pepper_from_keychain() -> Option<[u8; 32]> {
@@ -102,6 +131,7 @@ fn load_or_generate_pepper() -> [u8; 32] {
     }
     let cfg = ConfigFile {
         master_pepper: Some(BASE64.encode(bytes)),
+        mobile_access_enabled: None,
     };
     if let Ok(content) = toml::to_string(&cfg) {
         let _ = std::fs::write(&path, content);
@@ -148,6 +178,13 @@ impl AppConfig {
                 .unwrap_or_else(|_| ".".into())
         };
 
+        let mobile_from_env = std::env::var("MOBILE_ACCESS_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok());
+        let mobile_from_file = load_config_file()
+            .ok()
+            .and_then(|f| f.mobile_access_enabled);
+
         Self {
             database_url: std::env::var("DATABASE_URL")
                 .unwrap_or_else(|_| format!("sqlite:{}/.config/atendemente/atendemente.db?mode=rwc", home())),
@@ -162,6 +199,7 @@ impl AppConfig {
                 .ok()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(home()).join(".config").join("atendemente").join("uploads")),
+            mobile_access_enabled: mobile_from_env.or(mobile_from_file).unwrap_or(false),
         }
     }
 

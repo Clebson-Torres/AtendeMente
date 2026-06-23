@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
-import { Smartphone, Wifi, Copy, Check } from "lucide-react";
+import { Smartphone, Wifi, Copy, Check, WifiOff, Settings as SettingsIcon } from "lucide-react";
 import { toast } from "../components/ui/Toast";
 import Skeleton from "../components/ui/Skeleton";
 import { API } from "../lib/api-base";
+import { useNavigate } from "react-router-dom";
 
 interface NetworkInfo {
   ipv4: string[];
@@ -12,16 +13,21 @@ interface NetworkInfo {
 }
 
 export default function NetworkInfoPage() {
+  const navigate = useNavigate();
   const [info, setInfo] = useState<NetworkInfo | null>(null);
+  const [mobileEnabled, setMobileEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    fetch(`${API}/network-info`)
-      .then((r) => r.json())
-      .then((json) => {
-        setInfo(json.data);
+    Promise.all([
+      fetch(`${API}/network-info`).then((r) => r.json()),
+      fetch(`${API}/settings/mobile-access`).then((r) => r.json()),
+    ])
+      .then(([netJson, settingsJson]) => {
+        setInfo(netJson.data);
+        setMobileEnabled(settingsJson.data?.enabled ?? true);
         setLoading(false);
       })
       .catch(() => {
@@ -67,7 +73,19 @@ export default function NetworkInfoPage() {
         <h1 className="text-xl font-semibold text-slate-800">Acesso Mobile</h1>
       </div>
 
-      {!info || info.ipv4.length === 0 ? (
+      {!mobileEnabled ? (
+        <div className="text-center py-12 text-slate-400">
+          <WifiOff className="h-12 w-12 mx-auto mb-3" />
+          <p>Acesso mobile está desativado.</p>
+          <p className="text-sm mb-4">Ative em Configurações para acessar pelo celular.</p>
+          <button
+            onClick={() => navigate("/settings")}
+            className="inline-flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors"
+          >
+            <SettingsIcon className="h-4 w-4" /> Ir para Configurações
+          </button>
+        </div>
+      ) : !info || info.ipv4.length === 0 ? (
         <div className="text-center py-12 text-slate-400">
           <Wifi className="h-12 w-12 mx-auto mb-3" />
           <p>Nenhum endereço de rede encontrado.</p>

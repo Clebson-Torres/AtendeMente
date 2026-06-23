@@ -6,7 +6,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import { formatDate, formatTime } from "../lib/format";
 import { downloadFile } from "../lib/utils";
 import { DetailSkeleton } from "../components/ui/Skeleton";
-import { ArrowLeft, User, Phone, Calendar, FileText, Download } from "lucide-react";
+import { ArrowLeft, User, Phone, Calendar, FileText, Download, MessageCircle, Video } from "lucide-react";
 
 export default function PatientDetail() {
   const { id } = useParams<{ id: string }>();
@@ -77,6 +77,11 @@ export default function PatientDetail() {
               <Button size="sm" onClick={() => navigate(`/appointments?patientId=${id}`)}>
                 <Calendar className="h-4 w-4 mr-2" />Agendar
               </Button>
+              <a href="https://meet.google.com/new" target="_blank" rel="noopener noreferrer">
+                <Button size="sm" variant="outline">
+                  <Video className="h-4 w-4 mr-2" />Iniciar Atendimento
+                </Button>
+              </a>
               <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
                 <Download className="h-4 w-4 mr-2" />{exporting ? "Exportando..." : "Exportar ZIP"}
               </Button>
@@ -88,6 +93,15 @@ export default function PatientDetail() {
             <div className="flex items-center gap-2 text-sm">
               <Phone className="h-4 w-4 text-muted-foreground" />
               <span>{patient.phone}</span>
+              <a
+                href={`https://wa.me/55${patient.phone.replace(/\D/g, "")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-green-600 hover:text-green-700 transition-colors"
+                title="Abrir WhatsApp"
+              >
+                <MessageCircle className="h-4 w-4" />
+              </a>
             </div>
           )}
           {patient.email && (

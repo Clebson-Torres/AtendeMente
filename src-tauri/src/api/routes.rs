@@ -110,7 +110,40 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/backup/config", get(get_backup_config_handler).put(set_backup_config_handler))
         .route("/audit/logs", get(list_audit_logs))
         .route("/network-info", get(network_info))
+        .route("/settings/mobile-access", get(get_mobile_access).put(set_mobile_access))
         .with_state(state)
+}
+
+// ─── Mobile Access ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct MobileAccessResponse {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct MobileAccessInput {
+    enabled: bool,
+}
+
+async fn get_mobile_access(
+    State(state): State<Arc<AppState>>,
+) -> Json<ActionResponse<MobileAccessResponse>> {
+    Json(ActionResponse::success("", MobileAccessResponse {
+        enabled: state.config.mobile_access_enabled,
+    }))
+}
+
+async fn set_mobile_access(
+    State(state): State<Arc<AppState>>,
+    Json(input): Json<MobileAccessInput>,
+) -> Result<Json<ActionResponse<MobileAccessResponse>>, AppError> {
+    if input.enabled != state.config.mobile_access_enabled {
+        crate::config::set_mobile_access_enabled(input.enabled);
+    }
+    Ok(Json(ActionResponse::success("", MobileAccessResponse {
+        enabled: input.enabled,
+    })))
 }
 
 // ─── Network Info ───────────────────────────────────────────────────────────

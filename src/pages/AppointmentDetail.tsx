@@ -12,7 +12,7 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDateTime } from "../lib/format";
 import { paymentSchema, type PaymentInput } from "../lib/schemas";
-import { ArrowLeft, Lock, Calendar, Upload, File } from "lucide-react";
+import { ArrowLeft, Lock, Calendar, Upload, File, Repeat, AlertTriangle } from "lucide-react";
 import RescheduleDialog from "../components/RescheduleDialog";
 import FileUploadButton from "../components/FileUploadButton";
 import FileList from "../components/FileList";
@@ -38,6 +38,7 @@ export default function AppointmentDetail() {
   const [recordSaving, setRecordSaving] = useState(false);
 
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelSeriesEnabled, setCancelSeriesEnabled] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
 
@@ -112,8 +113,13 @@ export default function AppointmentDetail() {
     if (!id) return;
     setCancelling(true);
     try {
-      await api.appointments.cancel(id, cancelReason || undefined);
-      toast("Atendimento cancelado.");
+      if (cancelSeriesEnabled && appt?.series_id) {
+        await api.appointments.cancelSeries(appt.series_id);
+        toast("Série recorrente cancelada.");
+      } else {
+        await api.appointments.cancel(id, cancelReason || undefined);
+        toast("Atendimento cancelado.");
+      }
       setCancelOpen(false);
       load();
     } catch (e: any) {
@@ -187,6 +193,11 @@ export default function AppointmentDetail() {
         <div className="flex items-center gap-2">
           <StatusBadge status={appt.status} />
           <StatusBadge status={appt.confirmation_status} />
+          {appt.series_id && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+              <Repeat className="h-3 w-3" /> Recorrente
+            </span>
+          )}
         </div>
       </div>
 
@@ -227,7 +238,7 @@ export default function AppointmentDetail() {
             <Button onClick={() => setRescheduleOpen(true)} className="w-full">
               <Calendar className="h-4 w-4 mr-2" /> Reagendar
             </Button>
-            <Button variant="destructive" onClick={() => setCancelOpen(true)} className="w-full">Cancelar Atendimento</Button>
+            <Button variant="destructive" onClick={() => { setCancelOpen(true); setCancelSeriesEnabled(false); }} className="w-full">Cancelar Atendimento</Button>
           </div>
         )}
       </div>
@@ -298,8 +309,24 @@ export default function AppointmentDetail() {
         onRescheduled={load}
       />
 
-      <ConfirmDialog open={cancelOpen} onClose={() => setCancelOpen(false)} onConfirm={handleCancel} title="Cancelar Atendimento" message="Tem certeza que deseja cancelar este atendimento?" confirmLabel="Cancelar Atendimento" loading={cancelling}>
-        <div className="mt-4"><Input label="Motivo do cancelamento (opcional)" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} /></div>
+      <ConfirmDialog open={cancelOpen} onClose={() => { setCancelOpen(false); setCancelSeriesEnabled(false); }} onConfirm={handleCancel} title="Cancelar Atendimento" message="Tem certeza que deseja cancelar este atendimento?" confirmLabel={cancelSeriesEnabled ? "Cancelar Série" : "Cancelar Atendimento"} loading={cancelling}>
+        <div className="mt-4 space-y-3">
+          <Input label="Motivo do cancelamento (opcional)" value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
+          {appt.series_id && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={cancelSeriesEnabled}
+                onChange={(e) => setCancelSeriesEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-border text-destructive focus:ring-destructive"
+              />
+              <span className="text-sm flex items-center gap-1">
+                <AlertTriangle className="h-4 w-4 text-destructive" />
+                Cancelar toda a série recorrente
+              </span>
+            </label>
+          )}
+        </div>
       </ConfirmDialog>
     </div>
   );

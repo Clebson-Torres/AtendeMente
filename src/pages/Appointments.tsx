@@ -10,7 +10,7 @@ import Modal from "../components/ui/Modal";
 import StatusBadge from "../components/ui/StatusBadge";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
-import { formatTime } from "../lib/format";
+import { formatTime, toLocalDatetimeString } from "../lib/format";
 import { downloadFile } from "../lib/utils";
 import { CalendarSkeleton } from "../components/ui/Skeleton";
 import { appointmentSchema, type AppointmentInput } from "../lib/schemas";
@@ -86,12 +86,23 @@ export default function Appointments() {
   useEffect(() => {
     const patientId = searchParams.get("patientId");
     if (patientId) {
+      api.patients.list().then((result) => {
+        setPatients(result.items.filter((p) => p.status === "active"));
+      }).catch(() => setPatients([]));
       const d = new Date();
-      d.setMinutes(0, 0, 0);
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      if (isToday && now.getMinutes() > 0) {
+        d.setHours(d.getHours() + 1, 0, 0, 0);
+      } else if (!isToday) {
+        d.setHours(8, 0, 0, 0);
+      } else {
+        d.setMinutes(0, 0, 0);
+      }
       reset({
         patient_id: patientId,
-        starts_at: d.toISOString().slice(0, 16),
-        ends_at: new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16),
+        starts_at: toLocalDatetimeString(d),
+        ends_at: toLocalDatetimeString(new Date(d.getTime() + 60 * 60 * 1000)),
         session_price_cents: 0,
       });
       setRecurrenceEnabled(false);
@@ -125,11 +136,19 @@ export default function Appointments() {
     } catch { setPatients([]); }
 
     const d = date || new Date();
-    d.setMinutes(0, 0, 0);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    if (isToday && now.getMinutes() > 0) {
+      d.setHours(d.getHours() + 1, 0, 0, 0);
+    } else if (!isToday) {
+      d.setHours(8, 0, 0, 0);
+    } else {
+      d.setMinutes(0, 0, 0);
+    }
     reset({
       patient_id: "",
-      starts_at: d.toISOString().slice(0, 16),
-      ends_at: new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16),
+      starts_at: toLocalDatetimeString(d),
+      ends_at: toLocalDatetimeString(new Date(d.getTime() + 60 * 60 * 1000)),
       session_price_cents: 0,
     });
     setRecurrenceEnabled(false);
@@ -302,14 +321,23 @@ export default function Appointments() {
         </div>
       </Modal>
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Novo Atendimento">
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Novo Atendimento" size="lg">
         <form onSubmit={handleSubmit(onSave)} className="space-y-4">
           <div>
             <Select label="Paciente *" {...register("patient_id")} options={[{ value: "", label: "Selecione..." }, ...patients.map((p) => ({ value: p.id, label: p.full_name }))]} />
             <FieldError message={errors.patient_id?.message} />
           </div>
           <div>
-            <Input label="Início *" type="datetime-local" {...register("starts_at")} />
+            <Input label="Início *" type="datetime-local" {...register("starts_at", {
+              onChange: (e) => {
+                const val = e.target.value;
+                if (val) {
+                  const start = new Date(val);
+                  const end = new Date(start.getTime() + 60 * 60 * 1000);
+                  setValue("ends_at", toLocalDatetimeString(end));
+                }
+              },
+            })} />
             <FieldError message={errors.starts_at?.message} />
           </div>
           <div>
@@ -320,7 +348,18 @@ export default function Appointments() {
 
           <div className="flex items-center gap-2 pt-1">
             <input type="checkbox" id="recurrence-toggle" checked={recurrenceEnabled}
-              onChange={(e) => { setRecurrenceEnabled(e.target.checked); if (!e.target.checked) { setValue("recurrence_frequency", undefined); setValue("recurrence_end_mode", undefined); } }}
+              onChange={(e) => {
+                setRecurrenceEnabled(e.target.checked);
+                if (e.target.checked) {
+                  setValue("recurrence_end_mode", "occurrences");
+                  setValue("recurrence_frequency", "weekly");
+                } else {
+                  setValue("recurrence_frequency", undefined);
+                  setValue("recurrence_end_mode", undefined);
+                  setValue("recurrence_occurrences", undefined);
+                  setValue("recurrence_until_date", undefined);
+                }
+              }}
               className="h-4 w-4 rounded border-border text-primary focus:ring-primary" />
             <label htmlFor="recurrence-toggle" className="text-sm font-medium flex items-center gap-1 cursor-pointer">
               <Repeat className="h-4 w-4 text-primary" /> Repetir

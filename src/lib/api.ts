@@ -303,6 +303,16 @@ export const api = {
         body: JSON.stringify({ frequency }),
       }),
   },
+
+  settings: {
+    getMobileAccess: () =>
+      request<{ enabled: boolean }>("/settings/mobile-access"),
+    setMobileAccess: (enabled: boolean) =>
+      request<{ enabled: boolean }>("/settings/mobile-access", {
+        method: "PUT",
+        body: JSON.stringify({ enabled }),
+      }),
+  },
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────
