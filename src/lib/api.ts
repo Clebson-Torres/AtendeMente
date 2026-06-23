@@ -313,7 +313,18 @@ export const api = {
         body: JSON.stringify({ enabled }),
       }),
     getNetworkInfo: () =>
-      request<{ ipv4: string[]; ipv6: string[]; port: number }>("/network-info"),
+      request<{
+        interfaces: Array<{
+          name: string;
+          ip: string;
+          is_recommended: boolean;
+          is_vpn: boolean;
+          interface_type: string;
+        }>;
+        port: number;
+        has_vpn: boolean;
+        server_bound_to: string;
+      }>("/network-info"),
   },
 };
 

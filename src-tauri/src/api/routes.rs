@@ -153,10 +153,20 @@ async fn set_mobile_access(
 // ─── Network Info ───────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+struct NetworkInterface {
+    name: String,
+    ip: String,
+    is_recommended: bool,
+    is_vpn: bool,
+    interface_type: String,
+}
+
+#[derive(Serialize)]
 struct NetworkInfo {
-    ipv4: Vec<String>,
-    ipv6: Vec<String>,
+    interfaces: Vec<NetworkInterface>,
     port: u16,
+    has_vpn: bool,
+    server_bound_to: String,
 }
 
 async fn network_info(
@@ -164,28 +174,128 @@ async fn network_info(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ActionResponse<NetworkInfo>>, AppError> {
     let _user = get_authenticated_user(&headers, &state).await?;
-    let mut v4 = Vec::new();
-    let mut v6 = Vec::new();
 
-    if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
-        for (_, ip) in ifaces {
-            match ip {
-                std::net::IpAddr::V4(a) if !a.is_loopback() && !a.is_link_local() => {
-                    v4.push(a.to_string());
-                }
-                std::net::IpAddr::V6(a) if !a.is_loopback() => {
-                    v6.push(a.to_string());
-                }
-                _ => {}
-            }
+    let interfaces_raw = netdev::get_interfaces();
+    let default_iface = netdev::get_default_interface().ok();
+
+    let mut interfaces = Vec::new();
+    let mut has_vpn = false;
+
+    for iface in &interfaces_raw {
+        if iface.is_loopback() || iface.is_tun() || !iface.is_up() {
+            tracing::debug!("[Mobile] Interface ignorada: {} (loopback/tun/down)", iface.name);
+            continue;
         }
+
+        if is_virtual_interface(iface) {
+            tracing::debug!("[Mobile] Interface ignorada: {} (virtual)", iface.name);
+            continue;
+        }
+
+        let ipv4_addrs = iface.ipv4_addrs();
+        if ipv4_addrs.is_empty() {
+            continue;
+        }
+
+        let ip = ipv4_addrs[0];
+        if !is_private_ip(&ip) {
+            tracing::debug!("[Mobile] Interface ignorada: {} - {} (nao e IP privado)", iface.name, ip);
+            continue;
+        }
+
+        let name = iface.friendly_name.clone()
+            .unwrap_or_else(|| iface.name.clone());
+        let is_default = default_iface.as_ref()
+            .map(|d| d.name == iface.name)
+            .unwrap_or(false);
+        let iface_type = detect_interface_type(iface);
+        let is_vpn = iface_type == "vpn";
+
+        if is_vpn { has_vpn = true; }
+
+        tracing::info!(
+            "[Mobile] Interface encontrada: {} - {} (tipo={}, default={})",
+            name, ip, iface_type, is_default
+        );
+
+        interfaces.push(NetworkInterface {
+            name,
+            ip: ip.to_string(),
+            is_recommended: is_default,
+            is_vpn,
+            interface_type: iface_type,
+        });
+    }
+
+    interfaces.sort_by(|a, b| b.is_recommended.cmp(&a.is_recommended));
+
+    if let Some(ref best) = interfaces.first() {
+        tracing::info!("[Mobile] Interface recomendada: {} - {}", best.name, best.ip);
     }
 
     Ok(Json(ActionResponse::success("", NetworkInfo {
-        ipv4: v4,
-        ipv6: v6,
+        interfaces,
         port: state.config.server_port,
+        has_vpn,
+        server_bound_to: if state.config.mobile_access_enabled { "0.0.0.0".into() } else { "127.0.0.1".into() },
     })))
+}
+
+fn is_virtual_interface(iface: &netdev::Interface) -> bool {
+    let name_lower = iface.name.to_lowercase();
+    let friendly_lower = iface.friendly_name
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+
+    let virtual_keywords = [
+        "hyper-v", "hyper_v", "virtual", "vmware", "virtualbox", "vbox",
+        "docker", "wsl", "tailscale", "zerotier", "wireguard", "openvpn",
+        "tun", "tap", "pseudo", "isatap", "teredo", "6to4",
+    ];
+
+    for kw in &virtual_keywords {
+        if name_lower.contains(kw) || friendly_lower.contains(kw) {
+            return true;
+        }
+    }
+
+    !iface.is_physical()
+}
+
+fn detect_interface_type(iface: &netdev::Interface) -> String {
+    let name_lower = iface.name.to_lowercase();
+    let friendly_lower = iface.friendly_name
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+
+    if name_lower.contains("wi-fi") || name_lower.contains("wifi")
+        || name_lower.contains("wlan") || name_lower.contains("en0")
+        || friendly_lower.contains("wi-fi") || friendly_lower.contains("wifi")
+    {
+        return "wifi".into();
+    }
+
+    if name_lower.contains("ethernet") || name_lower.contains("eth")
+        || name_lower.contains("enp") || name_lower.contains("eno")
+        || friendly_lower.contains("ethernet")
+    {
+        return "ethernet".into();
+    }
+
+    if name_lower.contains("vpn") || name_lower.contains("wireguard")
+        || name_lower.contains("openvpn") || name_lower.contains("tailscale")
+        || name_lower.contains("zerotier")
+    {
+        return "vpn".into();
+    }
+
+    "other".into()
+}
+
+fn is_private_ip(ip: &std::net::Ipv4Addr) -> bool {
+    ip.is_private() || ip.is_link_local()
 }
 
 // ─── Backup ─────────────────────────────────────────────────────────────────
