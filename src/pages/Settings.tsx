@@ -3,6 +3,7 @@ import { api, type BackupConfigData } from "../lib/api";
 import { Shield, Download, Upload, RefreshCw, Lock, Unlock, Smartphone, Wifi, WifiOff } from "lucide-react";
 import Button from "../components/ui/Button";
 import Modal from "../components/ui/Modal";
+import Select from "../components/ui/Select";
 import { downloadFile } from "../lib/utils";
 import { toast } from "../components/ui/Toast";
 
@@ -222,7 +223,7 @@ export default function Settings() {
             <div className="flex-1">
               <Select
                 value={frequency}
-                onChange={(e) => setFrequency(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setFrequency(e.target.value)}
                 options={[
                   { value: "daily", label: "Diario" },
                   { value: "weekly", label: "Semanal" },
