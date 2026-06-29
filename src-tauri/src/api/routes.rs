@@ -145,6 +145,15 @@ async fn set_mobile_access(
 ) -> Result<Json<ActionResponse<MobileAccessResponse>>, AppError> {
     let _user = get_authenticated_user(&headers, &state).await?;
     crate::config::set_mobile_access_enabled(input.enabled);
+    if input.enabled {
+        if let Err(e) = crate::add_firewall_rule() {
+            tracing::warn!("[Mobile] Firewall: {}", e);
+        }
+    } else {
+        if let Err(e) = crate::remove_firewall_rule() {
+            tracing::warn!("[Mobile] Firewall: {}", e);
+        }
+    }
     Ok(Json(ActionResponse::success("", MobileAccessResponse {
         enabled: input.enabled,
     })))

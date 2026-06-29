@@ -258,7 +258,7 @@ export default function Settings() {
                 setMobileAccessSaving(true);
                 try {
                   await api.settings.setMobileAccess(enabled);
-                  toast(enabled ? "Acesso mobile ativado." : "Acesso mobile desativado.");
+                  toast(enabled ? "Acesso mobile ativado. Reinicie o aplicativo para aplicar." : "Acesso mobile desativado. Reinicie o aplicativo para aplicar.");
                 } catch (err: any) {
                   setMobileAccess(!enabled);
                   toast(err.message || "Erro ao salvar", "error");

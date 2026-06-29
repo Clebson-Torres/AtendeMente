@@ -245,3 +245,50 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>) -> Result
         })?;
     Ok(())
 }
+
+pub fn add_firewall_rule() -> Result<(), String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Nao foi possivel obter o caminho do executavel: {}", e))?
+        .to_string_lossy()
+        .to_string();
+
+    let output = std::process::Command::new("netsh")
+        .args([
+            "advfirewall", "firewall", "add", "rule",
+            "name=AtendeMente",
+            "dir=in",
+            "action=allow",
+            &format!("program={}", exe_path),
+            "enable=yes",
+        ])
+        .output()
+        .map_err(|e| format!("Falha ao executar netsh: {}", e))?;
+
+    if output.status.success() {
+        tracing::info!("[Mobile] Regra de firewall adicionada para: {}", exe_path);
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("[Mobile] Falha ao adicionar regra de firewall: {}", stderr);
+        Err(format!("Falha ao adicionar regra de firewall: {}", stderr))
+    }
+}
+
+pub fn remove_firewall_rule() -> Result<(), String> {
+    let output = std::process::Command::new("netsh")
+        .args([
+            "advfirewall", "firewall", "delete", "rule",
+            "name=AtendeMente",
+        ])
+        .output()
+        .map_err(|e| format!("Falha ao executar netsh: {}", e))?;
+
+    if output.status.success() {
+        tracing::info!("[Mobile] Regra de firewall removida");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!("[Mobile] Falha ao remover regra de firewall: {}", stderr);
+        Err(format!("Falha ao remover regra de firewall: {}", stderr))
+    }
+}

@@ -215,6 +215,13 @@ export default function NetworkInfoPage() {
             </div>
           </div>
 
+          {info.server_bound_to === "127.0.0.1" && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-700 space-y-1">
+              <p className="font-medium">Servidor escutando apenas localmente (127.0.0.1)</p>
+              <p>Ative o "Acesso Mobile" nas Configurações e reinicie o aplicativo para liberar conexões externas.</p>
+            </div>
+          )}
+
           {/* Tips */}
           <div className="bg-slate-50 rounded-2xl p-4 text-xs text-slate-500 space-y-1">
             <p className="font-medium text-slate-600">Dicas:</p>
