@@ -25,20 +25,14 @@ pub fn build_recurring_appointments(
 
     let start_dt = match chrono::NaiveDateTime::parse_from_str(starts_at, "%Y-%m-%dT%H:%M:%S") {
         Ok(dt) => dt,
-        Err(_) => match chrono::NaiveDateTime::parse_from_str(
-            &format!("{}T00:00:00", &starts_at[..10]),
-            "%Y-%m-%dT%H:%M:%S",
-        ) {
+        Err(_) => match chrono::NaiveDateTime::parse_from_str(starts_at, "%Y-%m-%dT%H:%M") {
             Ok(dt) => dt,
             Err(_) => return vec![],
         },
     };
     let end_dt = match chrono::NaiveDateTime::parse_from_str(ends_at, "%Y-%m-%dT%H:%M:%S") {
         Ok(dt) => dt,
-        Err(_) => match chrono::NaiveDateTime::parse_from_str(
-            &format!("{}T00:00:00", &ends_at[..10]),
-            "%Y-%m-%dT%H:%M:%S",
-        ) {
+        Err(_) => match chrono::NaiveDateTime::parse_from_str(ends_at, "%Y-%m-%dT%H:%M") {
             Ok(dt) => dt,
             Err(_) => return vec![],
         },
