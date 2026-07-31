@@ -276,6 +276,24 @@ mod tests {
     use super::*;
     use crate::db::models::{AppointmentDetail, CreateAppointmentInput};
 
+    fn current_and_previous_month_datetimes() -> (String, String) {
+        let now = chrono::Utc::now();
+        let current = now.format("%Y-%m").to_string();
+        let first_of_current = chrono::NaiveDate::parse_from_str(
+            &format!("{}-01", current),
+            "%Y-%m-%d",
+        )
+        .unwrap();
+        let previous = (first_of_current - chrono::Duration::days(1))
+            .format("%Y-%m")
+            .to_string();
+
+        (
+            format!("{}-10T09:00:00", current),
+            format!("{}-10T09:00:00", previous),
+        )
+    }
+
     async fn test_db() -> (tempfile::TempDir, sqlx::SqlitePool) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("payments-test.db");
@@ -343,10 +361,16 @@ mod tests {
         let patient_id = "patient-summary-counts";
         seed_user_and_patient(&db, user_id, patient_id).await;
 
-        let appt1 = create_test_appointment(&db, user_id, patient_id,
-            "2026-06-15T09:00:00", "2026-06-15T10:00:00").await;
-        let appt2 = create_test_appointment(&db, user_id, patient_id,
-            "2026-06-16T09:00:00", "2026-06-16T10:00:00").await;
+        let (current_start, _) = current_and_previous_month_datetimes();
+        let current_end = current_start.replace("T09:00:00", "T10:00:00");
+        let second_start = current_start.replace("-10T", "-11T");
+        let second_end = second_start.replace("T09:00:00", "T10:00:00");
+        let appt1 = create_test_appointment(
+            &db, user_id, patient_id, &current_start, &current_end,
+        ).await;
+        let appt2 = create_test_appointment(
+            &db, user_id, patient_id, &second_start, &second_end,
+        ).await;
 
         let update1 = crate::db::models::UpdateAppointmentInput {
             patient_id: None, starts_at: None, ends_at: None,
@@ -375,10 +399,15 @@ mod tests {
         let patient_id = "patient-summary-month";
         seed_user_and_patient(&db, user_id, patient_id).await;
 
-        let appt_current = create_test_appointment(&db, user_id, patient_id,
-            "2026-06-10T09:00:00", "2026-06-10T10:00:00").await;
-        let appt_last_month = create_test_appointment(&db, user_id, patient_id,
-            "2026-05-15T09:00:00", "2026-05-15T10:00:00").await;
+        let (current_start, previous_start) = current_and_previous_month_datetimes();
+        let current_end = current_start.replace("T09:00:00", "T10:00:00");
+        let previous_end = previous_start.replace("T09:00:00", "T10:00:00");
+        let appt_current = create_test_appointment(
+            &db, user_id, patient_id, &current_start, &current_end,
+        ).await;
+        let appt_last_month = create_test_appointment(
+            &db, user_id, patient_id, &previous_start, &previous_end,
+        ).await;
 
         for appt in [&appt_current, &appt_last_month] {
             let update = crate::db::models::UpdateAppointmentInput {
@@ -402,10 +431,15 @@ mod tests {
         let patient_id = "patient-list-month";
         seed_user_and_patient(&db, user_id, patient_id).await;
 
-        create_test_appointment(&db, user_id, patient_id,
-            "2026-06-10T09:00:00", "2026-06-10T10:00:00").await;
-        create_test_appointment(&db, user_id, patient_id,
-            "2026-05-15T09:00:00", "2026-05-15T10:00:00").await;
+        let (current_start, previous_start) = current_and_previous_month_datetimes();
+        let current_end = current_start.replace("T09:00:00", "T10:00:00");
+        let previous_end = previous_start.replace("T09:00:00", "T10:00:00");
+        create_test_appointment(
+            &db, user_id, patient_id, &current_start, &current_end,
+        ).await;
+        create_test_appointment(
+            &db, user_id, patient_id, &previous_start, &previous_end,
+        ).await;
 
         let payments = list_payments(&db, user_id, None, None).await.unwrap();
         assert_eq!(payments.len(), 1);

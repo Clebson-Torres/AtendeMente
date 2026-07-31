@@ -12,7 +12,7 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDateTime } from "../lib/format";
 import { paymentSchema, type PaymentInput } from "../lib/schemas";
-import { ArrowLeft, Lock, Calendar, Upload, File, Repeat, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Lock, Calendar, Upload, File, Repeat, AlertTriangle, Pencil } from "lucide-react";
 import RescheduleDialog from "../components/RescheduleDialog";
 import FileUploadButton from "../components/FileUploadButton";
 import FileList from "../components/FileList";
@@ -27,11 +27,34 @@ export default function AppointmentDetail() {
 
   const [payModal, setPayModal] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [sessionPrice, setSessionPrice] = useState(0);
+  const [savingPrice, setSavingPrice] = useState(false);
 
   const { register: regPay, handleSubmit: handlePaySubmit, reset: resetPay, formState: { errors: payErrors } } = useForm<PaymentInput>({
     resolver: zodResolver(paymentSchema),
     defaultValues: { status: "paid", method: "pix", amount_received_cents: 0 },
   });
+
+  function resetPaymentForm(data: AppointmentDetailType) {
+    const validStatuses: PaymentInput["status"][] = ["paid", "pending", "cancelled"];
+    const validMethods: PaymentInput["method"][] = ["pix", "card", "cash", "bank_transfer", "other"];
+    const status = validStatuses.includes(data.payment_status as PaymentInput["status"])
+      ? data.payment_status as PaymentInput["status"]
+      : "paid";
+    const method = validMethods.includes(data.payment_method as PaymentInput["method"])
+      ? data.payment_method as PaymentInput["method"]
+      : "pix";
+
+    resetPay({
+      status,
+      method,
+      amount_received_cents: data.amount_received_cents !== null
+        ? data.amount_received_cents / 100
+        : data.session_price_cents / 100,
+      notes: data.payment_notes || undefined,
+    });
+  }
 
   const [recordContent, setRecordContent] = useState("");
   const [recordLoading, setRecordLoading] = useState(false);
@@ -54,7 +77,8 @@ export default function AppointmentDetail() {
     try {
       const data = await api.appointments.get(id);
       setAppt(data);
-      resetPay({ status: "paid", method: "pix", amount_received_cents: data.session_price_cents / 100 });
+      setSessionPrice(data.session_price_cents / 100);
+      resetPaymentForm(data);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -93,6 +117,29 @@ export default function AppointmentDetail() {
       toast(e.message, "error");
     } finally {
       setPaying(false);
+    }
+  }
+
+  async function handleSavePrice() {
+    if (!id || !Number.isFinite(sessionPrice) || sessionPrice < 0) {
+      toast("Informe um valor válido.", "error");
+      return;
+    }
+
+    setSavingPrice(true);
+    try {
+      const updated = await api.appointments.update(id, {
+        session_price_cents: Math.round(sessionPrice * 100),
+      });
+      setAppt(updated);
+      setSessionPrice(updated.session_price_cents / 100);
+      resetPaymentForm(updated);
+      setEditingPrice(false);
+      toast("Valor da sessão atualizado.");
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setSavingPrice(false);
     }
   }
 
@@ -205,7 +252,50 @@ export default function AppointmentDetail() {
         <div className="app-surface p-5">
           <h2 className="font-semibold text-slate-900 mb-3">Pagamento</h2>
           <div className="text-sm space-y-2">
-            <p><span className="text-muted-foreground">Valor da sessão:</span> <span className="font-medium">{formatBRL(appt.session_price_cents)}</span></p>
+            {editingPrice ? (
+              <div className="space-y-2">
+                <Input
+                  label="Valor da sessão (R$)"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={sessionPrice}
+                  onChange={(event) => setSessionPrice(event.target.valueAsNumber)}
+                />
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={handleSavePrice} disabled={savingPrice}>
+                    {savingPrice ? "Salvando..." : "Salvar valor"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSessionPrice(appt.session_price_cents / 100);
+                      setEditingPrice(false);
+                    }}
+                    disabled={savingPrice}
+                  >
+                    Cancelar
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <p>
+                  <span className="text-muted-foreground">Valor da sessão:</span>{" "}
+                  <span className="font-medium">{formatBRL(appt.session_price_cents)}</span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setEditingPrice(true)}
+                  aria-label="Editar valor da sessão"
+                  title="Editar valor da sessão"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             {appt.payment_status ? (
               <>
                 <p><span className="text-muted-foreground">Status:</span> <StatusBadge status={appt.payment_status} /></p>

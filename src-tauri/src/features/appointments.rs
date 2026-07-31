@@ -360,6 +360,12 @@ pub async fn update_appointment(
 ) -> Result<AppointmentDetail, AppError> {
     let existing = get_appointment_detail(db, user_id, appointment_id).await?;
 
+    if input.session_price_cents.is_some_and(|price| price < 0) {
+        return Err(AppError::bad_request(
+            "O valor da sessao nao pode ser negativo.",
+        ));
+    }
+
     let starts_at = input.starts_at.clone().unwrap_or(existing.starts_at);
     let ends_at = input.ends_at.clone().unwrap_or(existing.ends_at);
 
@@ -688,5 +694,106 @@ mod tests {
         assert_eq!(updated.patient_id, patient_id);
         assert_eq!(updated.starts_at, "2026-06-15T14:00:00");
         assert_eq!(updated.ends_at, "2026-06-15T15:00:00");
+    }
+
+    #[tokio::test]
+    async fn update_appointment_rejects_negative_session_price() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-negative-price";
+        let patient_id = "patient-negative-price";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let created = create_appointment(
+            &db,
+            user_id,
+            &CreateAppointmentInput {
+                patient_id: patient_id.into(),
+                starts_at: "2026-06-15T09:00:00".into(),
+                ends_at: "2026-06-15T10:00:00".into(),
+                status: None,
+                confirmation_status: None,
+                session_price_cents: Some(10000),
+                quick_notes: None,
+                cancel_reason: None,
+                recurrence_frequency: None,
+                recurrence_end_mode: None,
+                recurrence_until_date: None,
+                recurrence_occurrences: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = update_appointment(
+            &db,
+            user_id,
+            &created.id,
+            &UpdateAppointmentInput {
+                patient_id: None,
+                starts_at: None,
+                ends_at: None,
+                status: None,
+                confirmation_status: None,
+                session_price_cents: Some(-1),
+                quick_notes: None,
+                cancel_reason: None,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        let unchanged = get_appointment_detail(&db, user_id, &created.id).await.unwrap();
+        assert_eq!(unchanged.session_price_cents, 10000);
+    }
+
+    #[tokio::test]
+    async fn update_appointment_persists_new_session_price() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-update-price";
+        let patient_id = "patient-update-price";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let created = create_appointment(
+            &db,
+            user_id,
+            &CreateAppointmentInput {
+                patient_id: patient_id.into(),
+                starts_at: "2026-06-15T09:00:00".into(),
+                ends_at: "2026-06-15T10:00:00".into(),
+                status: None,
+                confirmation_status: None,
+                session_price_cents: Some(10000),
+                quick_notes: None,
+                cancel_reason: None,
+                recurrence_frequency: None,
+                recurrence_end_mode: None,
+                recurrence_until_date: None,
+                recurrence_occurrences: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let updated = update_appointment(
+            &db,
+            user_id,
+            &created.id,
+            &UpdateAppointmentInput {
+                patient_id: None,
+                starts_at: None,
+                ends_at: None,
+                status: None,
+                confirmation_status: None,
+                session_price_cents: Some(17550),
+                quick_notes: None,
+                cancel_reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.session_price_cents, 17550);
+        let persisted = get_appointment_detail(&db, user_id, &created.id).await.unwrap();
+        assert_eq!(persisted.session_price_cents, 17550);
     }
 }

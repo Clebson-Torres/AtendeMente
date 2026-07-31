@@ -113,4 +113,24 @@ describe("AppointmentDetail - Complete / No-show", () => {
       expect(api.appointments.update).toHaveBeenCalledWith("appt-1", { status: "no_show" });
     });
   });
+
+  it("allows updating the session price from the appointment details", async () => {
+    const updatedAppointment = { ...mockAppointment, session_price_cents: 17550 };
+    (api.appointments.update as any).mockResolvedValue(updatedAppointment);
+    renderComponent();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Editar valor da sessão" }));
+
+    const priceInput = screen.getByRole("spinbutton", { name: "Valor da sessão (R$)" });
+    await userEvent.clear(priceInput);
+    await userEvent.type(priceInput, "175.50");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar valor" }));
+
+    await waitFor(() => {
+      expect(api.appointments.update).toHaveBeenCalledWith("appt-1", {
+        session_price_cents: 17550,
+      });
+      expect(screen.getByText("R$ 175,50")).toBeInTheDocument();
+    });
+  });
 });
