@@ -339,7 +339,17 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(|origin, _req| {
-                    is_allowed_origin(origin.as_bytes())
+                    let allowed = is_allowed_origin(origin.as_bytes());
+                    if !allowed {
+                        // Logged so an unexpected webview origin (which would
+                        // break the app wholesale) is immediately diagnosable
+                        // instead of showing up as a silent fetch failure.
+                        tracing::warn!(
+                            "[CORS] Origem rejeitada: {}",
+                            String::from_utf8_lossy(origin.as_bytes())
+                        );
+                    }
+                    allowed
                 }))
                 .allow_methods([
                     axum::http::Method::GET,
