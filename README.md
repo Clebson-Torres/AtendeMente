@@ -232,4 +232,19 @@ tem 29 avisos pré-existentes, então habilitá-lo como bloqueante exige limpá-
 
 ## Licença
 
-Proprietária — todos os direitos reservados.
+[GNU AGPL-3.0](LICENSE) — Copyright (c) 2026 Clebson Torres.
+
+Você pode usar, estudar, modificar e redistribuir o AtendeMente, inclusive
+comercialmente. Em troca, **qualquer versão modificada que você distribua ou
+disponibilize precisa vir sob a mesma licença, com o código-fonte aberto.**
+
+A cláusula que motivou a escolha é a **seção 13 (Remote Network Interaction)**:
+se alguém rodar uma versão modificada como serviço acessível pela rede, precisa
+oferecer o código-fonte dessa versão aos usuários do serviço. Isso é relevante
+neste projeto justamente porque a aplicação embarca um servidor HTTP — hoje só em
+loopback, mas a branch `feat/mobile-access-seguro` pretende expô-lo na rede local.
+A AGPL fecha a brecha de transformar o AtendeMente num SaaS fechado.
+
+O software é fornecido "como está", sem garantia. Na prática: quem instala o
+AtendeMente é o responsável pelos prontuários que guarda nele, incluindo backup e
+conformidade com a LGPD.

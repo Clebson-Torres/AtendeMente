@@ -3,6 +3,7 @@ name = "atendemente"
 version = "1.0.19"
 description = "AtendeMente - Gestão para psicólogos autônomos"
 authors = ["Clebson Torres"]
+license = "AGPL-3.0-only"
 edition = "2021"
 default-run = "atendemente"
 
