@@ -304,28 +304,6 @@ export const api = {
       }),
   },
 
-  settings: {
-    getMobileAccess: () =>
-      request<{ enabled: boolean }>("/settings/mobile-access"),
-    setMobileAccess: (enabled: boolean) =>
-      request<{ enabled: boolean }>("/settings/mobile-access", {
-        method: "PUT",
-        body: JSON.stringify({ enabled }),
-      }),
-    getNetworkInfo: () =>
-      request<{
-        interfaces: Array<{
-          name: string;
-          ip: string;
-          is_recommended: boolean;
-          is_vpn: boolean;
-          interface_type: string;
-        }>;
-        port: number;
-        has_vpn: boolean;
-        server_bound_to: string;
-      }>("/network-info"),
-  },
 };
 
 // ─── Types ───────────────────────────────────────────────────────────────

@@ -45,9 +45,17 @@ Mais detalhes sobre o projeto em [clebson-torres.github.io/atendemente.app](http
 - **Exportação** — dados do paciente em formato ZIP, CSV de pacientes/agenda/financeiro
 - **Upload de arquivos** — anexos por consulta (armazenamento local criptografado)
 - **Backup criptografado** — exportação `.atendemente` com AES-256-GCM + senha opcional
-- **Acesso Mobile** — toggle em Configurações (desativado por padrão), QR code quando ativo
 - **Headers de segurança** — CSP restritivo, X-Frame-Options DENY, X-Content-Type-Options nosniff
 - **Auditoria** — logs de acesso e alterações sensíveis
+
+> **Acesso mobile foi removido.** A versão anterior tinha um toggle que colocava a
+> API na rede local, mas sem TLS e sem pareamento de dispositivo — senha, token de
+> sessão e prontuários trafegavam em texto claro na Wi-Fi. Além disso a feature não
+> funcionava de fato: num app instalado o frontend não era servido ao celular. O
+> servidor agora escuta **somente em loopback** (`127.0.0.1` e `[::1]`), e a regra de
+> firewall criada pela versão antiga é removida automaticamente na primeira
+> execução. A reconstrução com transporte seguro está na branch
+> `feat/mobile-access-seguro`.
 
 ## Screenshots
 

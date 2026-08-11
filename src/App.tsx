@@ -15,7 +15,6 @@ const PatientDetail = lazy(() => import("./pages/PatientDetail"));
 const Appointments = lazy(() => import("./pages/Appointments"));
 const AppointmentDetail = lazy(() => import("./pages/AppointmentDetail"));
 const Payments = lazy(() => import("./pages/Payments"));
-const NetworkInfo = lazy(() => import("./pages/NetworkInfo"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
@@ -120,7 +119,6 @@ export default function App() {
                       <Route path="/appointments" element={<Appointments />} />
                       <Route path="/appointments/:id" element={<AppointmentDetail />} />
                       <Route path="/payments" element={<Payments />} />
-                      <Route path="/network" element={<NetworkInfo />} />
                       <Route path="/settings" element={<Settings />} />
                       <Route path="*" element={<NotFound />} />
                     </Routes>

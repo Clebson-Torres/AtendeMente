@@ -8,7 +8,6 @@ test.describe("Settings", () => {
     await expect(authPage.locator("text=Backup Manual").first()).toBeVisible({ timeout: 5000 });
     await expect(authPage.locator("text=Restaurar Backup").first()).toBeVisible({ timeout: 5000 });
     await expect(authPage.locator("text=Backup Automático").first()).toBeVisible({ timeout: 5000 });
-    await expect(authPage.locator("text=Acesso Mobile").first()).toBeVisible({ timeout: 5000 });
   });
 
   test("export backup opens password modal", async ({ authPage }) => {
@@ -69,32 +68,6 @@ test.describe("Settings", () => {
     await saveBtn.click();
 
     await expect(authPage.locator("text=Configuração salva").first()).toBeVisible({ timeout: 5000 });
-  });
-
-  test("toggle mobile access on", async ({ authPage }) => {
-    await authPage.goto("/settings");
-    await authPage.waitForSelector("text=Acesso Mobile", { timeout: 10000 });
-
-    const toggles = authPage.locator('input[role="switch"]');
-    const mobileToggle = toggles.last();
-    await mobileToggle.check({ force: true });
-    await authPage.waitForTimeout(1000);
-
-    await expect(authPage.locator("text=Reinicie o aplicativo").first()).toBeVisible({ timeout: 5000 });
-  });
-
-  test("toggle mobile access off", async ({ authPage }) => {
-    await authPage.goto("/settings");
-    await authPage.waitForSelector("text=Acesso Mobile", { timeout: 10000 });
-
-    const toggles = authPage.locator('input[role="switch"]');
-    const mobileToggle = toggles.last();
-
-    if (await mobileToggle.isChecked()) {
-      await mobileToggle.uncheck({ force: true });
-      await authPage.waitForTimeout(1000);
-      await expect(authPage.locator("text=Reinicie o aplicativo").first()).toBeVisible({ timeout: 5000 });
-    }
   });
 
   test("cancel export backup modal", async ({ authPage }) => {

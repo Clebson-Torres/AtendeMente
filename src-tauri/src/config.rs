@@ -15,12 +15,15 @@ pub struct AppConfig {
     pub server_port: u16,
     pub master_pepper: [u8; 32],
     pub storage_dir: PathBuf,
-    pub mobile_access_enabled: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct ConfigFile {
     master_pepper: Option<String>,
+    /// Deprecated. The "mobile access" feature was removed; this field is only
+    /// still read so an installation that had it enabled can be detected once
+    /// and cleaned up (see `cleanup_legacy_mobile_access`). It is never honored
+    /// for binding — the server is loopback-only.
     pub mobile_access_enabled: Option<bool>,
 }
 
@@ -55,11 +58,13 @@ async fn save_config_file_async(cfg: &ConfigFile) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-pub async fn set_mobile_access_enabled(enabled: bool) {
+/// Clears the deprecated `mobile_access_enabled` flag after the one-shot cleanup,
+/// so the firewall removal is not retried on every start.
+pub async fn clear_legacy_mobile_access_flag() {
     let mut cfg = load_config_file().unwrap_or_default();
-    cfg.mobile_access_enabled = Some(enabled);
+    cfg.mobile_access_enabled = None;
     if let Err(e) = save_config_file_async(&cfg).await {
-        tracing::error!("[Config] Falha ao persistir mobile_access_enabled: {}", e);
+        tracing::error!("[Config] Falha ao limpar flag legada de acesso mobile: {}", e);
     }
 }
 
@@ -184,13 +189,8 @@ impl AppConfig {
                 .unwrap_or_else(|_| ".".into())
         };
 
-        let mobile_from_env = std::env::var("MOBILE_ACCESS_ENABLED")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok());
-        let mobile_from_file = load_config_file()
-            .ok()
-            .and_then(|f| f.mobile_access_enabled);
-
+        // MOBILE_ACCESS_ENABLED is deliberately no longer read: honoring it would
+        // let an environment variable re-expose the API on the network.
         Self {
             database_url: std::env::var("DATABASE_URL")
                 .unwrap_or_else(|_| format!("sqlite:{}/.config/atendemente/atendemente.db?mode=rwc", home())),
@@ -205,7 +205,6 @@ impl AppConfig {
                 .ok()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(home()).join(".config").join("atendemente").join("uploads")),
-            mobile_access_enabled: mobile_from_env.or(mobile_from_file).unwrap_or(false),
         }
     }
 
@@ -265,5 +264,60 @@ impl AppConfig {
             "{}/{}/{}/{}.{}",
             user_id, patient_id, appointment_id, uuid, ext
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigFile;
+
+    /// A config.toml written by a version that had the mobile-access toggle must
+    /// still parse after the feature was removed — otherwise upgrading would
+    /// fail to read the file that also holds the fallback master pepper.
+    #[test]
+    fn parses_legacy_config_with_mobile_access_flag() {
+        let legacy = r#"
+            master_pepper = "q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8="
+            mobile_access_enabled = true
+        "#;
+        let cfg: ConfigFile = toml::from_str(legacy).expect("config legado deve parsear");
+        assert_eq!(cfg.mobile_access_enabled, Some(true));
+    }
+
+    #[test]
+    fn parses_config_without_the_flag() {
+        let current = r#"master_pepper = "q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8=""#;
+        let cfg: ConfigFile = toml::from_str(current).expect("config atual deve parsear");
+        assert_eq!(cfg.mobile_access_enabled, None);
+    }
+
+    /// Unknown keys must not break parsing either: a user could be downgrading,
+    /// or a future field could be added and then dropped.
+    #[test]
+    fn tolerates_unknown_keys() {
+        let cfg: ConfigFile = toml::from_str("alguma_chave_futura = 42")
+            .expect("chave desconhecida nao deve quebrar o parse");
+        assert!(cfg.mobile_access_enabled.is_none());
+    }
+
+    /// Clearing the flag must round-trip: the pepper has to survive, or an
+    /// installation that relies on the config-file fallback loses its key.
+    #[test]
+    fn clearing_the_flag_preserves_the_pepper() {
+        let legacy = r#"
+            master_pepper = "q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8="
+            mobile_access_enabled = true
+        "#;
+        let mut cfg: ConfigFile = toml::from_str(legacy).unwrap();
+        cfg.mobile_access_enabled = None;
+
+        let written = toml::to_string(&cfg).unwrap();
+        let reparsed: ConfigFile = toml::from_str(&written).unwrap();
+
+        assert_eq!(reparsed.mobile_access_enabled, None);
+        assert!(
+            written.contains("q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8="),
+            "o pepper deve sobreviver a limpeza da flag; escrito: {written}"
+        );
     }
 }

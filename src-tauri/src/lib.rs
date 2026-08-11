@@ -83,8 +83,13 @@ impl AppState {
 /// `allow_origin(Any)` let any website the user happened to visit call the local
 /// API *and read the reply*, which turned the unauthenticated endpoints
 /// (`/auth/login`, `/auth/register`, `/auth/recover`) into a drive-by brute-force
-/// and account-enumeration surface. Only the app's own shells and private-network
-/// hosts (the mobile-access case) are allowed; a public site gets no CORS headers.
+/// and account-enumeration surface. Only the app's own shells are allowed; a
+/// public site gets no CORS headers.
+///
+/// Private IPv4 ranges are still accepted even though the server now binds
+/// loopback only, so nothing outside this machine can reach it: the check is kept
+/// as defense in depth and for the `feat/mobile-access-seguro` rework, and it is
+/// covered by `cors_tests` below.
 fn is_allowed_origin(origin: &[u8]) -> bool {
     let Ok(origin) = std::str::from_utf8(origin) else {
         return false;
@@ -115,8 +120,7 @@ fn is_allowed_origin(origin: &[u8]) -> bool {
         return true;
     }
 
-    // Mobile access: the phone loads the app from the machine's LAN address, so
-    // that origin is same-origin anyway, but be explicit about private ranges.
+    // Private ranges: unreachable in practice while the server is loopback-only.
     if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
         return ip.is_private() || ip.is_loopback() || ip.is_link_local();
     }
@@ -255,6 +259,8 @@ fn start_backup_scheduler(state: Arc<AppState>) {
 }
 
 pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Option<std::sync::mpsc::Sender<()>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Undo the firewall hole left by the removed "mobile access" feature.
+    cleanup_legacy_mobile_access().await;
     start_backup_scheduler(state.clone());
     let auth_router = crate::auth::create_auth_router(state.clone());
     let api_routes = api::routes::create_router(state.clone());
@@ -362,9 +368,16 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
                 .allow_credentials(false),
         );
 
-    let bind_ip = if state.config.mobile_access_enabled { "0.0.0.0" } else { "127.0.0.1" };
-    let addr = format!("{}:{}", bind_ip, state.config.server_port);
-    tracing::info!("Starting API server on {} (mobile_access={})", addr, state.config.mobile_access_enabled);
+    // Loopback only, unconditionally.
+    //
+    // The former "mobile access" toggle bound this server to 0.0.0.0, which put
+    // the API — session tokens, credentials and decrypted patient records — on
+    // the local network over plain HTTP, with no TLS and no device pairing. The
+    // feature never worked end to end anyway (the embedded frontend was not
+    // reachable from an installed app), so it was removed rather than shipped
+    // insecure. See the `feat/mobile-access-seguro` branch for the rework.
+    let addr = format!("127.0.0.1:{}", state.config.server_port);
+    tracing::info!("Starting API server on {} (loopback only)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -373,14 +386,13 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
             e
         })?;
 
-    if !state.config.mobile_access_enabled {
-        let ipv6_addr = format!("[::1]:{}", state.config.server_port);
-        if let Ok(ipv6_listener) = tokio::net::TcpListener::bind(&ipv6_addr).await {
-            let app_clone = app.clone();
-            tokio::spawn(async move {
-                let _ = axum::serve(ipv6_listener, app_clone).await;
-            });
-        }
+    // The webview resolves `localhost` to ::1 on some Windows configurations.
+    let ipv6_addr = format!("[::1]:{}", state.config.server_port);
+    if let Ok(ipv6_listener) = tokio::net::TcpListener::bind(&ipv6_addr).await {
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(ipv6_listener, app_clone).await;
+        });
     }
 
     if let Some(tx) = ready {
@@ -436,37 +448,14 @@ mod cors_tests {
     }
 }
 
+/// Removes the inbound firewall rule the old "mobile access" toggle created.
+///
+/// That rule (`name=AtendeMente`, `dir=in`, `action=allow`, scoped to the whole
+/// program rather than to a port or to `LocalSubnet`) survives on every machine
+/// where the toggle was ever switched on. Since the feature is gone, the hole it
+/// opened has to be closed too — see `cleanup_legacy_mobile_access`.
 #[cfg(target_os = "windows")]
-pub fn add_firewall_rule() -> Result<(), String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Nao foi possivel obter o caminho do executavel: {}", e))?
-        .to_string_lossy()
-        .to_string();
-
-    let output = std::process::Command::new("netsh")
-        .args([
-            "advfirewall", "firewall", "add", "rule",
-            "name=AtendeMente",
-            "dir=in",
-            "action=allow",
-            &format!("program={}", exe_path),
-            "enable=yes",
-        ])
-        .output()
-        .map_err(|e| format!("Falha ao executar netsh: {}", e))?;
-
-    if output.status.success() {
-        tracing::info!("[Mobile] Regra de firewall adicionada para: {}", exe_path);
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!("[Mobile] Falha ao adicionar regra de firewall: {}", stderr);
-        Err(format!("Falha ao adicionar regra de firewall: {}", stderr))
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub fn remove_firewall_rule() -> Result<(), String> {
+fn remove_firewall_rule() -> Result<(), String> {
     let output = std::process::Command::new("netsh")
         .args([
             "advfirewall", "firewall", "delete", "rule",
@@ -476,23 +465,74 @@ pub fn remove_firewall_rule() -> Result<(), String> {
         .map_err(|e| format!("Falha ao executar netsh: {}", e))?;
 
     if output.status.success() {
-        tracing::info!("[Mobile] Regra de firewall removida");
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!("[Mobile] Falha ao remover regra de firewall: {}", stderr);
-        Err(format!("Falha ao remover regra de firewall: {}", stderr))
+        tracing::info!("[Cleanup] Regra de firewall 'AtendeMente' removida");
+        return Ok(());
     }
+
+    // netsh exits non-zero when nothing matched, printing to stdout rather than
+    // stderr. That is the desired end state, not a failure — do not alarm the
+    // user about a rule that is already gone.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if combined.contains("No rules match") || combined.contains("Nenhuma regra") {
+        tracing::info!("[Cleanup] Nenhuma regra de firewall 'AtendeMente' presente");
+        return Ok(());
+    }
+
+    Err(format!("netsh retornou erro: {}", combined.trim()))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn add_firewall_rule() -> Result<(), String> {
-    tracing::info!("[Mobile] Gerenciamento de firewall nao disponivel nesta plataforma");
+fn remove_firewall_rule() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn remove_firewall_rule() -> Result<(), String> {
-    tracing::info!("[Mobile] Gerenciamento de firewall nao disponivel nesta plataforma");
-    Ok(())
+/// One-shot cleanup for installations that had mobile access enabled.
+///
+/// Runs only when the persisted config still carries the deprecated
+/// `mobile_access_enabled = true`, then clears the flag so `netsh` is not spawned
+/// on every subsequent start.
+pub async fn cleanup_legacy_mobile_access() {
+    let cfg = match config::load_config_file() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::debug!("[Cleanup] Config nao lida, nada a limpar: {}", e);
+            return;
+        }
+    };
+
+    if cfg.mobile_access_enabled != Some(true) {
+        return;
+    }
+
+    tracing::info!(
+        "[Cleanup] Acesso mobile estava habilitado nesta instalacao; \
+         removendo regra de firewall e desativando a flag legada."
+    );
+
+    match remove_firewall_rule() {
+        Ok(()) => {
+            // Only now is the cleanup actually done, so stop flagging it.
+            config::clear_legacy_mobile_access_flag().await;
+        }
+        Err(e) => {
+            // `netsh` needs elevation, so this is the common case when the app
+            // runs as a normal user. Keep the flag set so the next start retries,
+            // and tell the user how to finish it by hand.
+            //
+            // The stale rule is not itself reachable anymore (nothing listens off
+            // loopback), but leaving a permissive inbound allow for this program
+            // behind would silently apply again if a future version listened on a
+            // network interface.
+            tracing::warn!(
+                "[Cleanup] Nao foi possivel remover a regra de firewall automaticamente ({}). \
+                 Execute como administrador: \
+                 netsh advfirewall firewall delete rule name=AtendeMente",
+                e
+            );
+        }
+    }
 }

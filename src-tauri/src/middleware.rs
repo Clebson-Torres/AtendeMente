@@ -43,8 +43,8 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
     );
 
     // Deliberately no Strict-Transport-Security: this server speaks plain HTTP
-    // (see `mobile_access_enabled`), so HSTS is ignored by the browser and only
-    // creates the impression that the transport is protected. Add it together
+    // and binds loopback only, so HSTS would be ignored by the browser and would
+    // only create the impression that the transport is protected. Add it together
     // with real TLS, not before.
 
     response

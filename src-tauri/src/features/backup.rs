@@ -782,7 +782,6 @@ mod tests {
             server_port: 3001,
             master_pepper: [0u8; 32],
             storage_dir,
-            mobile_access_enabled: false,
         };
         (dir, pool, config)
     }
