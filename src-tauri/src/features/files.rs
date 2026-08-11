@@ -441,6 +441,7 @@ mod tests {
             server_port: 3001,
             master_pepper: [0u8; 32],
             storage_dir,
+            data_dir: tmp.path().join("data"),
         }
     }
 

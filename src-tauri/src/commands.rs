@@ -154,6 +154,7 @@ mod tests {
             server_port: 3001,
             master_pepper: pepper,
             storage_dir,
+            data_dir: tmp.path().join("data"),
         };
 
         let state = Arc::new(AppState {

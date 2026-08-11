@@ -93,11 +93,23 @@ DATABASE_URL=sqlite:C:/Users/you/.config/atendemente/atendemente.db?mode=rwc
 AUTH_DATABASE_URL=sqlite:C:/Users/you/.config/atendemente/auth.db?mode=rwc
 SERVER_PORT=3001
 STORAGE_DIR=C:/Users/you/.config/atendemente/uploads
+DATA_DIR=C:/Users/you/.config/atendemente/data
 MASTER_PEPPER=base64-32-bytes
 ```
 
+`DATA_DIR` é onde ficam os bancos por usuário (`<DATA_DIR>/<user_id>/atendemente.db`).
+Testes e scripts devem apontá-lo para uma pasta temporária junto com `DATABASE_URL`,
+`AUTH_DATABASE_URL` e `STORAGE_DIR` — caso contrário gravam dados de teste no
+diretório de produção.
+
 A chave mestra (`MASTER_PEPPER`) é opcional. Se não for fornecida, o sistema gera uma
 de 32 bytes via CSPRNG e a armazena no Windows Credential Manager (ou macOS Keychain).
+
+> **`MASTER_PEPPER` é um override apenas do processo.** Ela nunca é gravada no cofre
+> de credenciais. Versões anteriores persistiam esse valor, então um pepper de teste
+> substituía silenciosamente o pepper real da máquina — e sem o pepper original todos
+> os registros cifrados daquela máquina ficam ilegíveis. Para trocar o pepper
+> armazenado, remova a entrada do cofre e deixe o app gerar um novo.
 
 ## Desenvolvimento
 

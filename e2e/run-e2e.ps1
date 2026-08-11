@@ -23,6 +23,9 @@ $env:DATABASE_URL = "sqlite:$TempDir\app.db?mode=rwc"
 $env:AUTH_DATABASE_URL = "sqlite:$TempDir\auth.db?mode=rwc"
 $env:SERVER_PORT = $Port
 $env:STORAGE_DIR = "$TempDir\uploads"
+# Sem isto, cada rodada deixa um diretorio de dados de teste no config real do
+# usuario (~/.config/atendemente/data/<uuid>).
+$env:DATA_DIR = "$TempDir\data"
 $env:RUST_LOG = "info"
 
 # Build the server binary (if needed)
@@ -53,13 +56,14 @@ Start-Sleep -Seconds 5
 # Start Rust server as background job
 Write-Host "`n[3/4] Starting API server on port $Port..." -ForegroundColor Yellow
 $ServerJob = Start-Job -Name "e2e-server" -ScriptBlock {
-  param($exe, $port, $dbUrl, $authDbUrl, $storeDir)
+  param($exe, $port, $dbUrl, $authDbUrl, $storeDir, $dataDir)
   $env:DATABASE_URL = $dbUrl
   $env:AUTH_DATABASE_URL = $authDbUrl
   $env:SERVER_PORT = $port
   $env:STORAGE_DIR = $storeDir
+  $env:DATA_DIR = $dataDir
   & $exe "--port" $port
-} -ArgumentList $ServerBin, $Port, $env:DATABASE_URL, $env:AUTH_DATABASE_URL, $env:STORAGE_DIR
+} -ArgumentList $ServerBin, $Port, $env:DATABASE_URL, $env:AUTH_DATABASE_URL, $env:STORAGE_DIR, $env:DATA_DIR
 
 Start-Sleep -Seconds 4
 

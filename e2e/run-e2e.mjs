@@ -78,6 +78,9 @@ async function main() {
       AUTH_DATABASE_URL: `sqlite:${join(TEMP_DIR, "auth.db")}?mode=rwc`,
       SERVER_PORT: PORT,
       STORAGE_DIR: TEMP_DIR,
+      // Sem isto, cada rodada deixa um diretorio de dados de teste no
+      // config real do usuario (~/.config/atendemente/data/<uuid>).
+      DATA_DIR: join(TEMP_DIR, "data"),
       RUST_LOG: "info",
     },
   });

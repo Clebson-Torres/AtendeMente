@@ -18,6 +18,8 @@ pub struct AppConfig {
     pub server_port: u16,
     pub master_pepper: [u8; 32],
     pub storage_dir: PathBuf,
+    /// Parent directory of the per-user databases (`<data_dir>/<user_id>/atendemente.db`).
+    pub data_dir: PathBuf,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -142,12 +144,26 @@ fn save_pepper_to_keychain(pepper: &[u8; 32]) -> bool {
 }
 
 fn load_or_generate_pepper() -> [u8; 32] {
-    // 1. Try env var (highest priority — for CI/E2E)
+    // 1. Env var override — process-local, NEVER persisted.
+    //
+    // This used to call `save_pepper_to_keychain`, so a throwaway value meant for
+    // CI/E2E silently replaced the machine's real pepper. Losing the pepper makes
+    // every encrypted record on that machine unreadable, and nothing warned about
+    // it. An override is an override: it applies to this process and to nothing
+    // else. To change the stored pepper, remove the keyring entry and let the app
+    // generate a new one.
     if let Ok(raw) = std::env::var("MASTER_PEPPER") {
         if let Ok(decoded) = decode_hex_or_base64(&raw) {
-            save_pepper_to_keychain(&decoded);
+            tracing::warn!(
+                "[Config] Usando MASTER_PEPPER do ambiente (apenas neste processo; \
+                 o pepper armazenado no cofre nao foi alterado)."
+            );
             return decoded;
         }
+        tracing::error!(
+            "[Config] MASTER_PEPPER definida mas invalida (esperado 32 bytes em hex ou \
+             base64); ignorando e usando o pepper do cofre."
+        );
     }
 
     // 2. Try keychain (OS-native secure storage)
@@ -253,6 +269,12 @@ impl AppConfig {
                 .ok()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(home()).join(".config").join("atendemente").join("uploads")),
+            // Where each user's database lives. Overridable so tests can be
+            // isolated — see `user_db_path`.
+            data_dir: std::env::var("DATA_DIR")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(home()).join(".config").join("atendemente").join("data")),
         }
     }
 
@@ -276,15 +298,15 @@ impl AppConfig {
         Ok(dir)
     }
 
+    /// Path to a user's database, under `data_dir`.
+    ///
+    /// This used to read `HOME`/`USERPROFILE` directly, ignoring every other
+    /// isolation knob. The e2e suite sets `DATABASE_URL`, `AUTH_DATABASE_URL` and
+    /// `STORAGE_DIR` to a temp folder but had no way to redirect this, so each run
+    /// left a real directory of fixture patient data in the production config
+    /// folder — hundreds of them accumulated. Honor `DATA_DIR` instead.
     pub fn user_db_path(&self, user_id: &str) -> String {
-        let config_dir = PathBuf::from(
-            std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| ".".into()),
-        )
-        .join(".config")
-        .join("atendemente");
-        let dir = config_dir.join("data").join(user_id);
+        let dir = self.data_dir.join(user_id);
         let _ = std::fs::create_dir_all(&dir);
         format!("sqlite:{}/atendemente.db?mode=rwc", dir.display())
     }
@@ -317,7 +339,63 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::ConfigFile;
+    use super::{decode_hex_or_base64, AppConfig, ConfigFile};
+    use std::path::PathBuf;
+
+    fn config_with_data_dir(data_dir: PathBuf) -> AppConfig {
+        AppConfig {
+            database_url: String::new(),
+            auth_database_url: String::new(),
+            server_port: 3001,
+            master_pepper: [0u8; 32],
+            storage_dir: PathBuf::from("uploads"),
+            data_dir,
+        }
+    }
+
+    /// Per-user databases must live under `data_dir`, not under a hardcoded
+    /// `$HOME/.config/atendemente/data`. Reading HOME directly is what made the
+    /// e2e suite write fixture patient data into the production config folder.
+    #[test]
+    fn user_db_path_follows_data_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config_with_data_dir(tmp.path().join("isolado"));
+        let uid = "550e8400-e29b-41d4-a716-446655440001";
+
+        let url = cfg.user_db_path(uid);
+
+        let expected = tmp.path().join("isolado").join(uid);
+        assert!(
+            url.contains(&expected.display().to_string()),
+            "esperava o caminho sob data_dir; obtido: {url}"
+        );
+        assert!(url.starts_with("sqlite:") && url.ends_with("atendemente.db?mode=rwc"));
+        assert!(expected.exists(), "o diretorio do usuario deve ser criado");
+    }
+
+    #[test]
+    fn user_db_path_isolates_users_from_each_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config_with_data_dir(tmp.path().to_path_buf());
+        let a = cfg.user_db_path("550e8400-e29b-41d4-a716-44665544000a");
+        let b = cfg.user_db_path("550e8400-e29b-41d4-a716-44665544000b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn decodes_pepper_from_hex_and_base64() {
+        let hex = "00".repeat(32);
+        assert_eq!(decode_hex_or_base64(&hex).unwrap(), [0u8; 32]);
+
+        let b64 = "q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8=";
+        assert!(decode_hex_or_base64(b64).is_ok());
+
+        // Comprimento errado e lixo devem ser rejeitados, para que uma
+        // MASTER_PEPPER invalida nao vire uma chave silenciosamente truncada.
+        assert!(decode_hex_or_base64("00").is_err());
+        assert!(decode_hex_or_base64("nao-e-hex-nem-base64!!").is_err());
+        assert!(decode_hex_or_base64("").is_err());
+    }
 
     /// A config.toml written by a version that had the mobile-access toggle must
     /// still parse after the feature was removed — otherwise upgrading would

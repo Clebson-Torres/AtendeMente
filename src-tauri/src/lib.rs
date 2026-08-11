@@ -450,6 +450,7 @@ mod scheduled_backup_tests {
             server_port: 3001,
             master_pepper: [0u8; 32],
             storage_dir: tmp.path().join("uploads"),
+            data_dir: tmp.path().join("data"),
         }
     }
 
