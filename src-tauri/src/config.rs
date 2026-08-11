@@ -209,6 +209,26 @@ impl AppConfig {
         }
     }
 
+    /// Scratch directory for backup/restore temporaries.
+    ///
+    /// Deliberately *not* the system temp dir: these files hold the patient
+    /// database in plaintext, and the app's own config directory is easier to
+    /// reason about (and to clean up) than a shared location.
+    pub fn temp_dir(&self) -> Result<PathBuf, crate::errors::AppError> {
+        let dir = self
+            .storage_dir
+            .parent()
+            .map(|p| p.join("tmp"))
+            .unwrap_or_else(|| PathBuf::from(".").join("tmp"));
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            crate::errors::AppError::internal(format!(
+                "Erro ao criar diretorio temporario: {}",
+                e
+            ))
+        })?;
+        Ok(dir)
+    }
+
     pub fn user_db_path(&self, user_id: &str) -> String {
         let config_dir = PathBuf::from(
             std::env::var("HOME")

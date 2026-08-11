@@ -116,10 +116,33 @@ pub struct ErrorResponse {
     pub errors: Option<HashMap<String, Vec<String>>>,
 }
 
+/// Shown instead of the internal error text, which routinely embeds SQL, column
+/// names and filesystem paths. The detail is logged server-side.
+const GENERIC_INTERNAL_MESSAGE: &str =
+    "Ocorreu um erro interno. Tente novamente; se persistir, consulte os logs do aplicativo.";
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status_code();
-        let message = self.to_string();
+
+        // Log the full detail, then decide what the client is allowed to see.
+        let message = match &self {
+            Self::Internal { message, .. } => {
+                tracing::error!("[AppError::Internal] {}", message);
+                GENERIC_INTERNAL_MESSAGE.to_string()
+            }
+            Self::Database(e) => {
+                tracing::error!("[AppError::Database] {}", e);
+                GENERIC_INTERNAL_MESSAGE.to_string()
+            }
+            Self::Crypto(detail) => {
+                tracing::error!("[AppError::Crypto] {}", detail);
+                GENERIC_INTERNAL_MESSAGE.to_string()
+            }
+            // BadRequest / Unauthorized / NotFound / Conflict / RateLimited carry
+            // messages written for the user.
+            other => other.to_string(),
+        };
 
         let body = match self {
             Self::Validation(ref errs) => {

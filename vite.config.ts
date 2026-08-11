@@ -16,6 +16,15 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./tests/setup.ts"],
-    exclude: ["node_modules", "e2e/**", "dist/**"],
+    // Globs, not bare paths: `exclude` REPLACES Vitest's defaults, and the bare
+    // "node_modules" entry did not match nested paths, so every dependency's
+    // own test suite under .worktrees/*/node_modules was being collected and run.
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.worktrees/**",
+      "**/src-tauri/**",
+      "e2e/**",
+    ],
   },
 });

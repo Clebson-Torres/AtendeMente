@@ -25,6 +25,11 @@ pub enum AuditAction {
     ImportCreated,
     BackupCreated,
     BackupRestored,
+    RecordUpdated,
+    PaymentUpdated,
+    PasswordReset,
+    /// Fallback for an update on an entity without a dedicated action.
+    EntityUpdated,
 }
 
 impl AuditAction {
@@ -50,6 +55,10 @@ impl AuditAction {
             Self::ImportCreated => "system.import",
             Self::BackupCreated => "system.backup.created",
             Self::BackupRestored => "system.backup.restored",
+            Self::RecordUpdated => "record.updated",
+            Self::PaymentUpdated => "payment.updated",
+            Self::PasswordReset => "auth.password.reset",
+            Self::EntityUpdated => "entity.updated",
         }
     }
 }
@@ -133,14 +142,29 @@ pub async fn write_audit_log(
         .map(|m| m.to_string())
         .unwrap_or_else(|| "{}".to_string());
     let device = ip_address.or(user_agent);
+    // Every caller's action string must map explicitly. The previous catch-all
+    // recorded `file_delete` and session-record edits as `patient.updated`,
+    // which made the LGPD trail actively misleading.
     let mapped = match action {
         "login" => AuditAction::LoginSucceeded,
         "logout" => AuditAction::Logout,
         "file_upload" => AuditAction::FileUploadApproved,
         "file_download" => AuditAction::FileDownloaded,
+        "file_delete" => AuditAction::FileDeleted,
         "patient_export" => AuditAction::ExportCreated,
+        "patient_import" => AuditAction::ImportCreated,
         "delete" => AuditAction::PatientDeleted,
-        _ => AuditAction::PatientUpdated,
+        "update" => match entity_type {
+            "patient" => AuditAction::PatientUpdated,
+            "appointment" | "recurring_series" => AuditAction::AppointmentUpdated,
+            "session_record" => AuditAction::RecordUpdated,
+            "payment" => AuditAction::PaymentUpdated,
+            _ => AuditAction::EntityUpdated,
+        },
+        other => {
+            tracing::warn!("[Audit] Acao nao mapeada '{}' em '{}'", other, entity_type);
+            AuditAction::EntityUpdated
+        }
     };
     let details = serde_json::from_str(&metadata_str).unwrap_or_else(|_| serde_json::json!({}));
     write_audit_event(db, user_id, mapped, entity_type, entity_id, details, device).await

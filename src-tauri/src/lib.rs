@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use sqlx::SqlitePool;
 use tauri::AppHandle;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::errors::AppError;
@@ -78,6 +78,52 @@ impl AppState {
     }
 }
 
+/// Whether a browser origin may read responses from this API.
+///
+/// `allow_origin(Any)` let any website the user happened to visit call the local
+/// API *and read the reply*, which turned the unauthenticated endpoints
+/// (`/auth/login`, `/auth/register`, `/auth/recover`) into a drive-by brute-force
+/// and account-enumeration surface. Only the app's own shells and private-network
+/// hosts (the mobile-access case) are allowed; a public site gets no CORS headers.
+fn is_allowed_origin(origin: &[u8]) -> bool {
+    let Ok(origin) = std::str::from_utf8(origin) else {
+        return false;
+    };
+
+    // Tauri's webview origin differs per platform: `tauri://localhost` on
+    // macOS/iOS, `http(s)://tauri.localhost` on Windows/Linux.
+    if origin == "tauri://localhost" || origin == "capacitor://localhost" {
+        return true;
+    }
+
+    let host = origin
+        .split_once("://")
+        .map(|(_scheme, rest)| rest)
+        .unwrap_or(origin);
+    // Strip the port, tolerating IPv6 literals like [::1]:3001.
+    let host = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(rest),
+        None => host.split(':').next().unwrap_or(host),
+    };
+
+    if host == "localhost"
+        || host == "tauri.localhost"
+        || host.ends_with(".localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+    {
+        return true;
+    }
+
+    // Mobile access: the phone loads the app from the machine's LAN address, so
+    // that origin is same-origin anyway, but be explicit about private ranges.
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return ip.is_private() || ip.is_loopback() || ip.is_link_local();
+    }
+
+    false
+}
+
 fn resolve_frontend_dist() -> PathBuf {
     if let Ok(path) = std::env::var("FRONTEND_DIST") {
         return PathBuf::from(path);
@@ -101,6 +147,27 @@ fn resolve_frontend_dist() -> PathBuf {
 
     // Fallback: CWD relativo (para compatibilidade)
     PathBuf::from("../dist")
+}
+
+/// Where scheduled backups are written: `<config>/backups/<user_id>/`.
+///
+/// Returns the path written. Note that an unencrypted bundle is a plain ZIP
+/// containing the database and decrypted attachments, so it inherits only the
+/// filesystem permissions of the user's profile directory.
+async fn write_scheduled_backup(
+    config: &config::AppConfig,
+    user_id: &str,
+    bundle: &crate::features::backup::BackupBundle,
+) -> Result<PathBuf, std::io::Error> {
+    let dir = config
+        .storage_dir
+        .parent()
+        .map(|p| p.join("backups").join(user_id))
+        .unwrap_or_else(|| PathBuf::from("backups").join(user_id));
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(&bundle.file_name);
+    tokio::fs::write(&path, &bundle.bytes).await?;
+    Ok(path)
 }
 
 fn start_backup_scheduler(state: Arc<AppState>) {
@@ -155,8 +222,27 @@ fn start_backup_scheduler(state: Arc<AppState>) {
                 if should_backup {
                     match crate::features::backup::create_backup(&db, &state.config, user_id).await {
                         Ok(bundle) => {
-                            let _ = crate::features::backup::touch_backup_timestamp(&db, user_id).await;
-                            tracing::info!("Backup automatico criado: {}", bundle.file_name);
+                            // The bundle used to be built and dropped here, so the
+                            // scheduled backup produced no file while still marking
+                            // itself as done. Write it out, and only record the
+                            // timestamp once the bytes are actually on disk.
+                            match write_scheduled_backup(&state.config, user_id, &bundle).await {
+                                Ok(path) => {
+                                    let _ = crate::features::backup::touch_backup_timestamp(
+                                        &db, user_id,
+                                    )
+                                    .await;
+                                    tracing::info!(
+                                        "Backup automatico criado: {}",
+                                        path.display()
+                                    );
+                                }
+                                Err(e) => tracing::error!(
+                                    "Falha ao gravar backup automatico para {}: {}",
+                                    user_id,
+                                    e
+                                ),
+                            }
                         }
                         Err(e) => {
                             tracing::warn!("Falha no backup automatico para {}: {}", user_id, e);
@@ -244,12 +330,17 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
                 }
             }),
         )
-        .route_layer(axum_middleware::from_fn(crate::middleware::security_headers))
+        // `layer`, not `route_layer`: route_layer skips the fallback, which is
+        // what serves index.html — the HTML was going out with no security
+        // headers at all.
+        .layer(axum_middleware::from_fn(crate::middleware::security_headers))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
+                .allow_origin(AllowOrigin::predicate(|origin, _req| {
+                    is_allowed_origin(origin.as_bytes())
+                }))
                 .allow_methods([
                     axum::http::Method::GET,
                     axum::http::Method::POST,
@@ -293,6 +384,46 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
             e
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::is_allowed_origin;
+
+    #[test]
+    fn allows_the_app_shells() {
+        assert!(is_allowed_origin(b"tauri://localhost"));
+        assert!(is_allowed_origin(b"http://tauri.localhost"));
+        assert!(is_allowed_origin(b"https://tauri.localhost"));
+        assert!(is_allowed_origin(b"http://localhost:1420"));
+        assert!(is_allowed_origin(b"http://127.0.0.1:3001"));
+        assert!(is_allowed_origin(b"http://[::1]:3001"));
+    }
+
+    #[test]
+    fn allows_private_lan_hosts_for_mobile_access() {
+        assert!(is_allowed_origin(b"http://192.168.0.42:3001"));
+        assert!(is_allowed_origin(b"http://10.0.0.7:3001"));
+        assert!(is_allowed_origin(b"http://172.16.5.9:3001"));
+    }
+
+    #[test]
+    fn rejects_public_websites() {
+        // The point of the allowlist: a page the user happens to visit must not
+        // be able to read replies from the local API.
+        assert!(!is_allowed_origin(b"https://evil.com"));
+        assert!(!is_allowed_origin(b"http://evil.com:3001"));
+        assert!(!is_allowed_origin(b"https://8.8.8.8"));
+        assert!(!is_allowed_origin(b"null"));
+        assert!(!is_allowed_origin(&[0xff, 0xfe]));
+    }
+
+    #[test]
+    fn rejects_lookalike_hosts() {
+        assert!(!is_allowed_origin(b"https://localhost.evil.com"));
+        assert!(!is_allowed_origin(b"https://tauri.localhost.evil.com"));
+        assert!(!is_allowed_origin(b"https://notlocalhost"));
+    }
 }
 
 #[cfg(target_os = "windows")]

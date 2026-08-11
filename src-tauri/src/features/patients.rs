@@ -96,6 +96,108 @@ fn row_to_patient_list_item(row: PatientRow, user_id: &str) -> Result<PatientLis
     })
 }
 
+// ─── Legacy plaintext PII migration ──────────────────────────────────────────────
+
+/// Moves patient PII out of the legacy plaintext columns and into the encrypted
+/// blob, then clears the plaintext.
+///
+/// Covers two cases left behind by older versions:
+///   * rows written before migration 20240101000008 (plaintext only), and
+///   * rows written by versions that wrote *both* the plaintext columns and
+///     `pii_encrypted` — for those the encrypted copy is authoritative and the
+///     plaintext is simply removed.
+///
+/// Requires the user's key to be loaded, so it runs after login/unlock. It is
+/// idempotent and safe to call on every login: once no row has plaintext left,
+/// the initial query returns nothing.
+pub async fn migrate_plaintext_pii(db: &SqlitePool, user_id: &str) -> Result<u64, AppError> {
+    let rows = sqlx::query_as::<_, PatientRow>(
+        r#"SELECT * FROM patients
+        WHERE user_id = ?
+        AND (phone IS NOT NULL OR email IS NOT NULL OR birth_date IS NOT NULL
+             OR emergency_phone IS NOT NULL OR health_history IS NOT NULL
+             OR medications_in_use IS NOT NULL OR admin_notes IS NOT NULL)"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao listar PII em texto claro: {}", e)))?;
+
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    let mut migrated = 0u64;
+
+    for row in rows {
+        let patient_id = row.id.clone();
+
+        if row.pii_encrypted.is_some() {
+            // Already encrypted by a double-writing version: drop the plaintext.
+            clear_plaintext_pii(db, user_id, &patient_id).await?;
+            migrated += 1;
+            continue;
+        }
+
+        let pii = PatientPii {
+            phone: row.phone.clone(),
+            email: row.email.clone(),
+            birth_date: row.birth_date.clone(),
+            emergency_phone: row.emergency_phone.clone(),
+            health_history: row.health_history.clone(),
+            medications_in_use: row.medications_in_use.clone(),
+            admin_notes: row.admin_notes.clone(),
+        };
+        let json = serde_json::to_string(&pii)
+            .map_err(|e| AppError::internal(format!("Erro ao serializar PII: {}", e)))?;
+        let encrypted = crypto::encrypt_content(&json, user_id)?;
+
+        sqlx::query(
+            r#"UPDATE patients SET
+                pii_encrypted = ?, pii_iv = ?, pii_auth_tag = ?,
+                phone = NULL, email = NULL, birth_date = NULL, emergency_phone = NULL,
+                health_history = NULL, medications_in_use = NULL, admin_notes = NULL
+            WHERE id = ? AND user_id = ?"#,
+        )
+        .bind(&encrypted.encrypted_payload)
+        .bind(&encrypted.iv)
+        .bind(&encrypted.auth_tag)
+        .bind(&patient_id)
+        .bind(user_id)
+        .execute(db)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao cifrar PII do paciente: {}", e)))?;
+
+        // Keep the search index in sync with the values just encrypted.
+        let tokens = generate_patient_tokens(&patient_id, &row.full_name, &pii);
+        set_patient_tokens(db, &patient_id, &tokens).await?;
+
+        migrated += 1;
+    }
+
+    tracing::info!("[Patients] PII migrada para armazenamento cifrado: {} registro(s)", migrated);
+    Ok(migrated)
+}
+
+async fn clear_plaintext_pii(
+    db: &SqlitePool,
+    user_id: &str,
+    patient_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"UPDATE patients SET
+            phone = NULL, email = NULL, birth_date = NULL, emergency_phone = NULL,
+            health_history = NULL, medications_in_use = NULL, admin_notes = NULL
+        WHERE id = ? AND user_id = ?"#,
+    )
+    .bind(patient_id)
+    .bind(user_id)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao limpar PII em texto claro: {}", e)))?;
+    Ok(())
+}
+
 // ─── Search tokens ───────────────────────────────────────────────────────────────
 
 fn generate_patient_tokens(patient_id: &str, full_name: &str, pii: &PatientPii) -> Vec<(String, String, String)> {
@@ -293,6 +395,32 @@ pub async fn list_patients(
     })
 }
 
+/// All non-deleted patients with PII decrypted, for CSV export.
+/// Rows that fail to decrypt are skipped with a warning rather than aborting
+/// the whole export.
+pub async fn list_all_for_export(
+    db: &SqlitePool,
+    user_id: &str,
+) -> Result<Vec<Patient>, AppError> {
+    let rows = sqlx::query_as::<_, PatientRow>(
+        r#"SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL ORDER BY full_name"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Failed to export patients: {}", e)))?;
+
+    let mut patients = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row.id.clone();
+        match row_to_patient(row, user_id) {
+            Ok(p) => patients.push(p),
+            Err(e) => tracing::warn!("[Patients] Paciente {} omitido do export: {}", id, e),
+        }
+    }
+    Ok(patients)
+}
+
 pub async fn get_patient_detail(
     db: &SqlitePool,
     user_id: &str,
@@ -370,7 +498,20 @@ async fn find_duplicate_patient(
                 continue;
             }
         }
-        let pii = decrypt_pii(&row, user_id)?;
+        // A single undecryptable row (e.g. restored from a backup made under a
+        // different pepper) must not block creating or editing every other
+        // patient — skip it instead of failing the whole request.
+        let pii = match decrypt_pii(&row, user_id) {
+            Ok(pii) => pii,
+            Err(e) => {
+                tracing::warn!(
+                    "[Patients] Ignorando paciente {} na checagem de duplicatas: {}",
+                    row.id,
+                    e
+                );
+                continue;
+            }
+        };
         let existing_key = utils::build_patient_identity_key(&row.full_name, pii.phone.as_deref());
         if existing_key == input_key {
             return Ok(Some(row_to_patient(row, user_id)?));
@@ -446,20 +587,21 @@ pub async fn create_patient(
 
     let (pii_encrypted, pii_iv, pii_auth_tag) = encrypt_pii(input, user_id)?;
 
+    // PII (phone/email/birth_date/emergency_phone/...) goes only into the
+    // encrypted blob. The legacy plaintext columns are left NULL — writing both
+    // defeated migration 20240101000008 and left contact data readable in the
+    // database file. `decrypt_pii` still reads those columns for rows written
+    // before this change.
     sqlx::query(
-        r#"INSERT INTO patients (id, user_id, full_name, chart_number, phone, email, birth_date,
-            emergency_phone, status, created_at, updated_at,
+        r#"INSERT INTO patients (id, user_id, full_name, chart_number,
+            status, created_at, updated_at,
             pii_encrypted, pii_iv, pii_auth_tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)"#,
+        VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)"#,
     )
     .bind(&id)
     .bind(user_id)
     .bind(&input.full_name)
     .bind(&input.chart_number)
-    .bind(&input.phone)
-    .bind(&input.email)
-    .bind(&input.birth_date)
-    .bind(&input.emergency_phone)
     .bind(&now)
     .bind(&now)
     .bind(&pii_encrypted)
@@ -523,20 +665,19 @@ pub async fn update_patient(
 
     let (pii_encrypted, pii_iv, pii_auth_tag) = encrypt_pii(&create_input, user_id)?;
 
+    // Clear the legacy plaintext PII columns: editing a patient created by an
+    // older version is what removes their readable contact data from the file.
     sqlx::query(
         r#"UPDATE patients SET
-            full_name = ?, chart_number = ?, phone = ?, email = ?, birth_date = ?,
-            emergency_phone = ?,
+            full_name = ?, chart_number = ?,
+            phone = NULL, email = NULL, birth_date = NULL, emergency_phone = NULL,
+            health_history = NULL, medications_in_use = NULL, admin_notes = NULL,
             pii_encrypted = ?, pii_iv = ?, pii_auth_tag = ?,
             updated_at = ?
         WHERE id = ? AND user_id = ? AND deleted_at IS NULL"#,
     )
     .bind(&input.full_name)
     .bind(&input.chart_number)
-    .bind(&input.phone)
-    .bind(&input.email)
-    .bind(&input.birth_date)
-    .bind(&input.emergency_phone)
     .bind(&pii_encrypted)
     .bind(&pii_iv)
     .bind(&pii_auth_tag)

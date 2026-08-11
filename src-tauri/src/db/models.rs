@@ -197,8 +197,23 @@ pub struct UpdateAppointmentInput {
     pub status: Option<String>,
     pub confirmation_status: Option<String>,
     pub session_price_cents: Option<i64>,
-    pub quick_notes: Option<String>,
-    pub cancel_reason: Option<String>,
+    /// Absent = leave unchanged, `null` = clear, value = set.
+    /// A plain `Option` could not express "clear", so an explicit `null` was
+    /// silently treated as "unchanged".
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    pub quick_notes: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    pub cancel_reason: Option<Option<String>>,
+}
+
+/// Distinguishes a missing JSON field (`None`) from an explicit `null`
+/// (`Some(None)`). `#[serde(default)]` supplies `None` when the key is absent;
+/// this runs only when the key is present.
+fn deserialize_nullable_field<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 // ─── Recurring Series ───────────────────────────────────────────────────────

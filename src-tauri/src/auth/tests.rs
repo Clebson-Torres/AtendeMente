@@ -348,7 +348,7 @@ mod tests {
     // ─── Reset password ─────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn reset_password_changes_password_and_keeps_recovery_secret() {
+    async fn reset_password_changes_password_and_rotates_recovery_secret() {
         let (_dir, db) = test_auth_db().await;
         let reg = auth_service::register(&db, "reset-pwd@test.com", "senha12345", "Reset User")
             .await
@@ -358,9 +358,11 @@ mod tests {
             .await
             .unwrap();
 
-        auth_service::reset_password(&db, &recovery.reset_token, "nova-senha-67890")
+        let reset = auth_service::reset_password(&db, &recovery.reset_token, "nova-senha-67890")
             .await
             .unwrap();
+        let new_secret = reset.recovery_secret;
+        assert_eq!(reset.user_id, reg.user_id);
 
         let login_new = auth_service::login(&db, "reset-pwd@test.com", "nova-senha-67890").await;
         assert!(login_new.is_ok());
@@ -368,9 +370,43 @@ mod tests {
         let login_old = auth_service::login(&db, "reset-pwd@test.com", "senha12345").await;
         assert!(login_old.is_err());
 
-        let recovery2 = auth_service::recover_with_secret(&db, &reg.user_id, &reg.recovery_secret)
-            .await;
-        assert!(recovery2.is_ok());
+        // The code that authorised the reset is spent — reusing it must fail.
+        let reused = auth_service::recover_with_secret(&db, &reg.user_id, &reg.recovery_secret).await;
+        assert!(reused.is_err());
+
+        // ...and the replacement issued by the reset works.
+        assert_ne!(new_secret, reg.recovery_secret);
+        let with_new = auth_service::recover_with_secret(&db, &reg.user_id, &new_secret).await;
+        assert!(with_new.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reset_password_issues_a_usable_replacement_code_each_time() {
+        let (_dir, db) = test_auth_db().await;
+        let reg = auth_service::register(&db, "reset-twice@test.com", "senha12345", "Twice User")
+            .await
+            .unwrap();
+
+        let mut secret = reg.recovery_secret.clone();
+        for i in 0..3 {
+            let recovery = auth_service::recover_with_secret(&db, &reg.user_id, &secret)
+                .await
+                .unwrap_or_else(|e| panic!("rodada {i} deveria aceitar o codigo atual: {e}"));
+            secret = auth_service::reset_password(
+                &db,
+                &recovery.reset_token,
+                &format!("senha-nova-{i}-abcdef"),
+            )
+            .await
+            .unwrap()
+            .recovery_secret;
+        }
+
+        assert!(
+            auth_service::login(&db, "reset-twice@test.com", "senha-nova-2-abcdef")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

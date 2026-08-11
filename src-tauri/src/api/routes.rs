@@ -416,7 +416,17 @@ async fn list_audit_logs(
 ) -> Result<Json<ActionResponse<Vec<crate::audit::AuditEvent>>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let events = crate::audit::list_audit_events(&db, &user.id, query.limit.unwrap_or(100)).await?;
+    let limit = query.limit.unwrap_or(100);
+
+    // Data events live in the user's database; authentication events (login,
+    // logout, lock, unlock) live in the auth database. The viewer previously
+    // read only the former, so the auth half of the LGPD trail was invisible
+    // even once it started being recorded.
+    let mut events = crate::audit::list_audit_events(&db, &user.id, limit).await?;
+    events.extend(crate::audit::list_audit_events(&state.auth_db, &user.id, limit).await?);
+    events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    events.truncate(limit.clamp(1, 500) as usize);
+
     Ok(Json(ActionResponse::success("", events)))
 }
 

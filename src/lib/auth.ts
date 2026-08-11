@@ -219,14 +219,21 @@ export async function recoverPassword(
   return data.reset_token;
 }
 
+/**
+ * Redefine a senha e devolve o NOVO código de recuperação.
+ *
+ * O código usado para autorizar o reset é invalidado no servidor, então o
+ * usuário precisa guardar este substituto — sem ele, fica sem via de
+ * recuperação.
+ */
 export async function resetPassword(
   resetToken: string,
   newPassword: string
-): Promise<void> {
-  await apiRequest("/auth/reset-password", {
-    reset_token: resetToken,
-    new_password: newPassword,
-  });
+): Promise<{ user_id: string; recovery_secret: string }> {
+  return apiRequest<{ user_id: string; recovery_secret: string }>(
+    "/auth/reset-password",
+    { reset_token: resetToken, new_password: newPassword }
+  );
 }
 
 // ─── Session restore ─────────────────────────────────────────────────────

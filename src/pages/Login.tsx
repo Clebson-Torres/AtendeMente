@@ -14,13 +14,15 @@ export default function Login() {
   const { user } = useAuth();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState<"login" | "recover" | "reset">("login");
+  const [mode, setMode] = useState<"login" | "recover" | "reset" | "newCode">("login");
   const [recoverMethod, setRecoverMethod] = useState<"file" | "manual">("file");
   const [recoveryFile, setRecoveryFile] = useState<{ user_id: string; recovery_secret: string } | null>(null);
   const [manualEmail, setManualEmail] = useState("");
   const [manualCode, setManualCode] = useState("");
   const [resetToken, setResetToken] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
+  // Novo código emitido pelo reset: o anterior foi invalidado.
+  const [newRecovery, setNewRecovery] = useState<{ user_id: string; recovery_secret: string } | null>(null);
 
   const { register, handleSubmit, formState: { errors } } = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -112,17 +114,33 @@ export default function Login() {
     setError("");
     setLoading(true);
     try {
-      await resetPassword(resetToken, data.new_password);
-      setMode("login");
+      const replacement = await resetPassword(resetToken, data.new_password);
+      setRecoveryFile(null);
       setError("");
       setSuccessMsg("");
-      setRecoveryFile(null);
-      alert("Senha redefinida com sucesso! Faça login com sua nova senha.");
+      // Não volta direto para o login: o código antigo deixou de funcionar e o
+      // usuário precisa guardar o substituto antes de sair desta tela.
+      setNewRecovery(replacement);
+      setMode("newCode");
     } catch (err: any) {
       setError(err.message || "Erro ao redefinir senha");
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleDownloadNewCode() {
+    if (!newRecovery) return;
+    // Mesmo formato aceito por handleSelectFile (precisa de user_id + secret).
+    const blob = new Blob([JSON.stringify(newRecovery, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "atendemente-recuperacao.json";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -131,7 +149,13 @@ export default function Login() {
         <div className="text-center space-y-1">
           <h1 className="text-2xl font-display font-semibold text-slate-900">AtendeMente</h1>
           <p className="text-sm text-muted-foreground">
-            {mode === "login" ? "Faça login para continuar" : mode === "recover" ? "Recuperar Senha" : "Nova Senha"}
+            {mode === "login"
+              ? "Faça login para continuar"
+              : mode === "recover"
+              ? "Recuperar Senha"
+              : mode === "reset"
+              ? "Nova Senha"
+              : "Guarde seu novo código"}
           </p>
         </div>
 
@@ -223,6 +247,51 @@ export default function Login() {
               {loading ? "Redefinindo..." : "Redefinir senha"}
             </button>
           </form>
+        )}
+
+        {mode === "newCode" && newRecovery && (
+          <div className="space-y-4">
+            <div className="bg-success/10 p-3 rounded-xl border border-success/20">
+              <p className="text-success text-sm font-medium">✓ Senha redefinida com sucesso!</p>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Por segurança, o código de recuperação que você acabou de usar foi
+              <strong> invalidado</strong>. Guarde o novo código abaixo — é ele que
+              permitirá recuperar o acesso na próxima vez.
+            </p>
+            <div className="bg-slate-50 border border-border rounded-xl p-4 text-center">
+              <p className="font-mono text-lg tracking-widest text-slate-900 select-all">
+                {newRecovery.recovery_secret}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleDownloadNewCode}
+                className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-xl hover:bg-primary/90 font-medium transition-colors text-sm"
+              >
+                Baixar arquivo .json
+              </button>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(newRecovery.recovery_secret)}
+                className="flex-1 border border-border py-2.5 rounded-xl hover:bg-slate-50 font-medium transition-colors text-sm"
+              >
+                Copiar código
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setNewRecovery(null);
+                setResetToken("");
+                setMode("login");
+              }}
+              className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Já guardei — ir para o login
+            </button>
+          </div>
         )}
 
         {mode === "login" && (

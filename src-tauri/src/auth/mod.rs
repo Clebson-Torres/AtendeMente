@@ -123,28 +123,24 @@ async fn login_handler(
 
     let result = match auth_service::login(&state.auth_db, &input.email, &input.password).await {
         Ok(r) => {
-            let _ = audit::write_audit_event(
+            record_session_event(
                 &state.auth_db,
                 &r.user_id,
                 AuditAction::LoginSucceeded,
-                "session",
                 Some(&r.user_id),
                 serde_json::json!({}),
-                None,
             )
             .await;
             r
         }
         Err(e) => {
             let user_id = format!("unknown:{}", input.email);
-            let _ = audit::write_audit_event(
+            record_session_event(
                 &state.auth_db,
                 &user_id,
                 AuditAction::LoginFailed,
-                "session",
                 None,
                 serde_json::json!({"email": input.email}),
-                None,
             )
             .await;
             return Err(AppError::unauthorized(e));
@@ -156,7 +152,15 @@ async fn login_handler(
         .map_err(|e| AppError::internal(format!("Erro ao iniciar criptografia: {}", e)))?;
 
     // Open user's app DB
-    state.get_or_open_user_db(&result.user_id).await?;
+    let user_db = state.get_or_open_user_db(&result.user_id).await?;
+
+    // Now that the key is loaded, sweep any patient PII still sitting in the
+    // legacy plaintext columns. Best-effort: never block a login over it.
+    if let Err(e) =
+        crate::features::patients::migrate_plaintext_pii(&user_db, &result.user_id).await
+    {
+        tracing::warn!("[Auth] Falha ao migrar PII em texto claro no login: {}", e);
+    }
 
     Ok(Json(ActionResponse::success(
         "Login realizado com sucesso!",
@@ -183,14 +187,12 @@ async fn logout_handler(
         .await
         .map_err(|e| AppError::internal(e))?;
     if !user_id.is_empty() {
-        let _ = audit::write_audit_event(
+        record_session_event(
             &state.auth_db,
             &user_id,
             AuditAction::Logout,
-            "session",
             Some(&user_id),
             serde_json::json!({}),
-            None,
         )
         .await;
     }
@@ -265,13 +267,29 @@ async fn recover_handler(
 async fn reset_password_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<ResetPasswordInput>,
-) -> Result<Json<ActionResponse<()>>, AppError> {
-    auth_service::reset_password(&state.auth_db, &input.reset_token, &input.new_password)
-        .await
-        .map_err(|e| AppError::bad_request(e))?;
+) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    let result =
+        auth_service::reset_password(&state.auth_db, &input.reset_token, &input.new_password)
+            .await
+            .map_err(|e| AppError::bad_request(e))?;
 
-    Ok(Json(ActionResponse::<()>::success_empty(
+    record_session_event(
+        &state.auth_db,
+        &result.user_id,
+        AuditAction::PasswordReset,
+        Some(&result.user_id),
+        serde_json::json!({}),
+    )
+    .await;
+
+    Ok(Json(ActionResponse::success(
         "Senha redefinida com sucesso! Faca login novamente.",
+        serde_json::json!({
+            // The code used for this reset is now spent; these replace it, in the
+            // same shape as the recovery file written at registration.
+            "user_id": result.user_id,
+            "recovery_secret": result.recovery_secret,
+        }),
     )))
 }
 
@@ -287,14 +305,12 @@ async fn lock_handler(
     crate::crypto::clear_user_crypto(&user_id);
     state.clear_user_db_for_user(&user_id).await;
 
-    let _ = audit::write_audit_event(
+    record_session_event(
         &state.auth_db,
         &user_id,
         AuditAction::Locked,
-        "session",
         Some(&user_id),
         serde_json::json!({}),
-        None,
     )
     .await;
 
@@ -316,14 +332,12 @@ async fn unlock_handler(
         .map_err(|e| AppError::internal(e))?;
 
     if !password_valid {
-        let _ = audit::write_audit_event(
+        record_session_event(
             &state.auth_db,
             &user_id,
             AuditAction::LoginFailed,
-            "session",
             Some(&user_id),
             serde_json::json!({"reason": "unlock_wrong_password"}),
-            None,
         )
         .await;
         return Err(AppError::unauthorized("Senha incorreta."));
@@ -332,16 +346,18 @@ async fn unlock_handler(
     crate::crypto::init_user_crypto(&user_id)
         .map_err(|e| AppError::internal(format!("Erro ao reiniciar criptografia: {}", e)))?;
 
-    state.get_or_open_user_db(&user_id).await?;
+    let user_db = state.get_or_open_user_db(&user_id).await?;
 
-    let _ = audit::write_audit_event(
+    if let Err(e) = crate::features::patients::migrate_plaintext_pii(&user_db, &user_id).await {
+        tracing::warn!("[Auth] Falha ao migrar PII em texto claro no unlock: {}", e);
+    }
+
+    record_session_event(
         &state.auth_db,
         &user_id,
         AuditAction::Unlocked,
-        "session",
         Some(&user_id),
         serde_json::json!({}),
-        None,
     )
     .await;
 
@@ -364,6 +380,27 @@ async fn onboarding_handler(
     Ok(Json(ActionResponse::<()>::success_empty(
         "Onboarding concluido.",
     )))
+}
+
+/// Records a session-scoped audit event, logging (rather than discarding) any
+/// failure. These writes used to be dropped with `let _ = ...`, which is how a
+/// missing `audit_logs` table in the auth database went unnoticed.
+async fn record_session_event(
+    db: &sqlx::SqlitePool,
+    user_id: &str,
+    action: AuditAction,
+    entity_id: Option<&str>,
+    details: serde_json::Value,
+) {
+    if let Err(e) =
+        audit::write_audit_event(db, user_id, action, "session", entity_id, details, None).await
+    {
+        tracing::error!(
+            "[Auth] Falha ao registrar evento de auditoria '{}': {}",
+            action.as_str(),
+            e
+        );
+    }
 }
 
 fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AppError> {

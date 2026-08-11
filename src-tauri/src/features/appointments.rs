@@ -7,6 +7,7 @@ use crate::db::models::{
 };
 use crate::errors::AppError;
 use crate::features::appointments_recurrence::build_recurring_appointments;
+use crate::features::exports::escape_csv;
 
 #[derive(Debug, sqlx::FromRow)]
 struct AppointmentDetailRow {
@@ -284,6 +285,18 @@ pub async fn create_appointment(
         return Err(AppError::bad_request("A recorrencia precisa gerar pelo menos duas sessoes."));
     }
 
+    // Overlap was only checked for the first slot, so the remaining occurrences
+    // were inserted over whatever else was booked. Check them all before
+    // creating anything, and report which date is in the way.
+    for appt in &results {
+        if find_overlapping(db, user_id, &appt.starts_at, &appt.ends_at, None).await? {
+            return Err(AppError::conflict(format!(
+                "Conflito de horario em {}. Ajuste a recorrencia ou o agendamento existente.",
+                crate::utils::format_date_br(&appt.starts_at[..10.min(appt.starts_at.len())])
+            )));
+        }
+    }
+
     // Create series
     let series_id = Uuid::new_v4().to_string();
     let start_date = &input.starts_at[..10];
@@ -383,8 +396,16 @@ pub async fn update_appointment(
     let status = input.status.as_deref().unwrap_or(&existing.status);
     let confirmation = input.confirmation_status.as_deref().unwrap_or(&existing.confirmation_status);
     let price = input.session_price_cents.unwrap_or(existing.session_price_cents);
-    let quick_notes = input.quick_notes.clone().or(existing.quick_notes);
-    let cancel_reason = input.cancel_reason.clone().or(existing.cancel_reason);
+    // `None` = field absent, keep what is stored. `Some(inner)` = field present,
+    // so `inner` (including `None`) is the new value.
+    let quick_notes = match &input.quick_notes {
+        Some(value) => value.clone(),
+        None => existing.quick_notes,
+    };
+    let cancel_reason = match &input.cancel_reason {
+        Some(value) => value.clone(),
+        None => existing.cancel_reason,
+    };
 
     sqlx::query(
         r#"UPDATE appointments SET patient_id = ?, starts_at = ?, ends_at = ?, status = ?,
@@ -531,22 +552,14 @@ pub async fn export_appointments_csv(
         csv.push_str(&format!(
             "{},{},{},{},{},{}\n",
             escape_csv(&r.1),
-            r.2,
-            r.3,
-            r.4,
-            r.5,
+            escape_csv(&r.2),
+            escape_csv(&r.3),
+            escape_csv(&r.4),
+            escape_csv(&r.5),
             r.6,
         ));
     }
     Ok(csv)
-}
-
-fn escape_csv(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,32 @@ use uuid::Uuid;
 const SESSION_TTL_DAYS: i64 = 7;
 const RESET_TOKEN_TTL_MINUTES: i64 = 5;
 
+/// Argon2 hash of a throwaway password, used to spend the same work on a
+/// non-existent account as on a real one. Without this, `login` returns before
+/// hashing when the address is unknown, which times account existence.
+static DUMMY_PASSWORD_HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn dummy_password_hash() -> &'static str {
+    DUMMY_PASSWORD_HASH.get_or_init(|| {
+        hash_password("senha-inexistente-para-equalizar-tempo")
+            .unwrap_or_else(|_| String::new())
+    })
+}
+
+/// Length-independent comparison for hex digests, so a wrong recovery code
+/// cannot be narrowed down by response time.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 pub struct AuthResult {
     pub user_id: String,
     pub email: String,
@@ -23,6 +49,15 @@ pub struct AuthResult {
 pub struct RecoveryResult {
     pub user_id: String,
     pub reset_token: String,
+}
+
+/// Outcome of a password reset. `recovery_secret` replaces the code that was
+/// just consumed, and `user_id` lets the client write a recovery file in the
+/// same shape as the one produced at registration.
+#[derive(Debug)]
+pub struct ResetResult {
+    pub user_id: String,
+    pub recovery_secret: String,
 }
 
 /// Hash a password using Argon2id
@@ -200,10 +235,17 @@ pub async fn login(
     .bind(&email)
     .fetch_optional(db)
     .await
-    .map_err(|e| format!("Erro ao buscar usuario: {}", e))?
-    .ok_or_else(|| "Email ou senha inválidos.".to_string())?;
+    .map_err(|e| format!("Erro ao buscar usuario: {}", e))?;
 
-    let (user_id, password_hash, full_name, onboarding_completed) = row;
+    let (user_id, password_hash, full_name, onboarding_completed) = match row {
+        Some(row) => row,
+        None => {
+            // Spend the same Argon2 work as a real verification before failing,
+            // so response time does not reveal whether the account exists.
+            let _ = verify_password(password, dummy_password_hash());
+            return Err("Email ou senha inválidos.".into());
+        }
+    };
 
     if !verify_password(password, &password_hash)? {
         return Err("Email ou senha inválidos.".into());
@@ -343,7 +385,7 @@ pub async fn recover_with_secret(
 
     let computed_hash = hash_recovery_secret(recovery_secret);
 
-    if stored_hash != computed_hash {
+    if !constant_time_eq(&stored_hash, &computed_hash) {
         return Err("Chave de recuperação inválida.".into());
     }
 
@@ -375,12 +417,17 @@ pub async fn recover_with_secret(
     })
 }
 
-/// Reset password using a valid reset token
+/// Reset password using a valid reset token.
+///
+/// Consumes the recovery code that authorised this reset and issues a fresh one,
+/// which is returned so the caller can show it to the user. The old code stops
+/// working the moment the password changes — previously it stayed valid forever,
+/// contradicting the "single use" promise shown during onboarding.
 pub async fn reset_password(
     db: &SqlitePool,
     reset_token: &str,
     new_password: &str,
-) -> Result<(), String> {
+) -> Result<ResetResult, String> {
     if new_password.len() < 8 {
         return Err("A senha deve ter no mínimo 8 caracteres.".into());
     }
@@ -413,10 +460,18 @@ pub async fn reset_password(
 
     let password_hash = hash_password(new_password)?;
 
+    // Rotate the recovery code in the same statement as the password: the code
+    // that authorised this reset is now spent, and the user gets a replacement
+    // so they are not left without a recovery path.
+    let new_recovery_secret = generate_recovery_secret();
+    let new_recovery_hash = hash_recovery_secret(&new_recovery_secret);
+
     sqlx::query(
-        "UPDATE auth_users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE auth_users SET password_hash = ?, recovery_secret_hash = ?, \
+         updated_at = datetime('now') WHERE id = ?",
     )
     .bind(&password_hash)
+    .bind(&new_recovery_hash)
     .bind(&user_id)
     .execute(db)
     .await
@@ -429,5 +484,8 @@ pub async fn reset_password(
         .await
         .map_err(|e| format!("Erro ao limpar sessoes: {}", e))?;
 
-    Ok(())
+    Ok(ResetResult {
+        user_id,
+        recovery_secret: new_recovery_secret,
+    })
 }

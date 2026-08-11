@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::audit;
 use crate::db::models::{Payment, PaymentWithAppointment, UpsertPaymentInput};
 use crate::errors::AppError;
+use crate::features::exports::escape_csv;
 
 pub async fn upsert_payment(
     db: &SqlitePool,
@@ -263,9 +264,17 @@ pub async fn export_payments_csv(
         let method = r.4.as_deref().unwrap_or("other");
         let date = if r.8.len() >= 10 { &r.8[..10] } else { &r.8 };
         let time = if r.8.len() >= 16 { &r.8[11..16] } else { "" };
+        // The patient name was interpolated raw: a comma in the name shifted
+        // every following column, and a leading `=` executed as a formula.
         csv.push_str(&format!(
             "{},{},{},{},{},{},{}\n",
-            r.7, date, time, r.9, r.5.unwrap_or(0), status, method,
+            escape_csv(&r.7),
+            escape_csv(date),
+            escape_csv(time),
+            r.9,
+            r.5.unwrap_or(0),
+            escape_csv(status),
+            escape_csv(method),
         ));
     }
     Ok(csv)
