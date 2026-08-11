@@ -81,14 +81,72 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Verify binary
+      # Executa o binario de verdade. "O arquivo existe" nao prova que o app sobe:
+      # a falha mais comum em producao e a janela abrir e o servidor nao carregar,
+      # porque run_server morre depois (porta ocupada, migration incompativel,
+      # banco mal configurado) e o app segue aberto sem API.
+      - name: Smoke test — o servidor sobe e responde
         shell: bash
+        working-directory: src-tauri
         run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            test -f src-tauri/target/debug/server.exe && echo "OK: server.exe"
-          else
-            test -f src-tauri/target/debug/server && echo "OK: server"
-          fi
+          set -uo pipefail
+
+          BIN=target/debug/server
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=target/debug/server.exe; fi
+          if [ ! -f "$BIN" ]; then echo "::error::binario nao encontrado: $BIN"; exit 1; fi
+
+          TMP="$(mktemp -d)"
+          # MASTER_PEPPER e override apenas do processo e nao toca o cofre de
+          # credenciais, entao o smoke test nao depende de Secret Service (Linux)
+          # nem de Keychain destravado (macOS) no runner.
+          export MASTER_PEPPER=0000000000000000000000000000000000000000000000000000000000000000
+          export AUTH_DATABASE_URL="sqlite:$TMP/auth.db?mode=rwc"
+          export DATABASE_URL="sqlite:$TMP/app.db?mode=rwc"
+          export DATA_DIR="$TMP/data"
+          export STORAGE_DIR="$TMP/uploads"
+          export SERVER_PORT=3001
+          export RUST_LOG=info
+
+          "./$BIN" --port 3001 > "$TMP/server.log" 2>&1 &
+          PID=$!
+
+          falhar() {
+            echo "::error::$1"
+            echo "--- log do servidor ---"
+            cat "$TMP/server.log" || true
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          }
+
+          pronto=""
+          for _ in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:3001/api/health > /dev/null 2>&1; then pronto=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then falhar "o servidor morreu antes de responder"; fi
+            sleep 1
+          done
+          [ -n "$pronto" ] || falhar "/api/health nao respondeu em 40s"
+
+          curl -sf http://127.0.0.1:3001/api/health || falhar "health falhou"
+          echo
+
+          # register + login exercitam migrations, Argon2, criacao da sessao e do
+          # banco por usuario — o caminho que de fato quebra em producao.
+          REG=$(curl -sf -X POST http://127.0.0.1:3001/api/auth/register \
+                  -H 'Content-Type: application/json' \
+                  -d '{"email":"smoke@test.local","password":"senha123456","full_name":"Smoke"}') \
+            || falhar "register falhou"
+          echo "$REG" | grep -q '"success":true' || falhar "register nao retornou success"
+
+          LOGIN=$(curl -sf -X POST http://127.0.0.1:3001/api/auth/login \
+                    -H 'Content-Type: application/json' \
+                    -d '{"email":"smoke@test.local","password":"senha123456"}') \
+            || falhar "login falhou"
+          echo "$LOGIN" | grep -q '"token"' || falhar "login nao retornou token"
+
+          kill "$PID" 2>/dev/null || true
+          echo "smoke test OK em ${{ runner.os }}"
+          echo "--- log do servidor ---"
+          cat "$TMP/server.log"
 
   release-build:
     if: startsWith(github.ref, 'refs/tags/v')
