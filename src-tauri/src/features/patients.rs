@@ -403,9 +403,39 @@ pub async fn list_patients(
         (rows, total.0)
     };
 
-    let items = rows.into_iter()
-        .map(|row| row_to_patient_list_item(row, user_id))
-        .collect::<Result<Vec<_>, _>>()?;
+    // One row that fails to decrypt must not take down the whole list. That is
+    // reachable after restoring a backup made under a different pepper: the main
+    // patient screen answered 500 and the app became unusable instead of showing
+    // the records that are fine.
+    //
+    // The row is still listed, with the contact fields empty — the name and chart
+    // number live in plaintext columns, so the patient stays visible and can be
+    // opened and corrected. Dropping it silently would be worse: the patient would
+    // simply vanish from the list.
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row_to_patient_list_item(row.clone(), user_id) {
+            Ok(item) => items.push(item),
+            Err(e) => {
+                tracing::warn!(
+                    "[Patients] PII do paciente {} nao pode ser lida; listado sem os \
+                     dados de contato: {}",
+                    row.id,
+                    e
+                );
+                items.push(PatientListItem {
+                    id: row.id,
+                    full_name: row.full_name,
+                    chart_number: row.chart_number,
+                    phone: None,
+                    email: None,
+                    birth_date: None,
+                    status: row.status,
+                    created_at: row.created_at,
+                });
+            }
+        }
+    }
 
     Ok(PaginatedData {
         items,
@@ -838,6 +868,61 @@ mod tests {
             Some("bm90LXJlYWxseS1jaXBoZXI="),
             "o blob ilegivel deve ter sido substituido"
         );
+    }
+
+    /// An undecryptable row must not break the whole patient list.
+    #[tokio::test]
+    async fn lists_patients_even_when_one_row_cannot_be_decrypted() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400f3";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        // Um paciente normal.
+        create_patient(
+            &db,
+            user_id,
+            &CreatePatientInput {
+                full_name: "Paciente Bom".into(),
+                chart_number: Some("P001".into()),
+                phone: Some("11911112222".into()),
+                email: None,
+                birth_date: None,
+                health_history: None,
+                medications_in_use: None,
+                emergency_phone: None,
+                admin_notes: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Um paciente com blob ilegivel e SEM copia em claro (dado realmente perdido).
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, chart_number, status, \
+             created_at, updated_at, pii_encrypted, pii_iv, pii_auth_tag) \
+             VALUES ('quebrado', ?, 'Paciente Ilegivel', 'P002', 'active', \
+             '2026-01-01T00:00:00', '2026-01-01T00:00:00', \
+             'bm90LXJlYWxseS1jaXBoZXI=', 'YWFhYWFhYWFhYWFh', 'YmJiYmJiYmJiYmJiYmJiYg==')",
+        )
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let page = list_patients(&db, user_id, "", 1, 50, None)
+            .await
+            .expect("a listagem nao deve falhar por causa de uma linha ilegivel");
+
+        assert_eq!(page.items.len(), 2, "ambos os pacientes devem aparecer");
+        let quebrado = page.items.iter().find(|p| p.id == "quebrado").unwrap();
+        assert_eq!(quebrado.full_name, "Paciente Ilegivel");
+        assert_eq!(quebrado.chart_number.as_deref(), Some("P002"));
+        assert!(quebrado.phone.is_none(), "contato indisponivel fica vazio");
+
+        let bom = page.items.iter().find(|p| p.id != "quebrado").unwrap();
+        assert_eq!(bom.phone.as_deref(), Some("11911112222"));
     }
 
     /// When the blob *is* readable it stays authoritative and the redundant
