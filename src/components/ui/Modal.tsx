@@ -55,23 +55,35 @@ export default function Modal({ open, onClose, title, children, size = "md" }: P
     [onClose]
   );
 
+  // Foco e trava de scroll: SOMENTE quando `open` muda.
+  //
+  // Antes isto dividia um efeito com o listener de teclado, cujas dependencias
+  // incluem `handleKeyDown` -> `onClose`. Como todo chamador passa uma arrow
+  // inline (`onClose={() => setX(false)}`), a identidade muda a cada render: cada
+  // tecla digitada dentro do modal re-rodava o efeito e o
+  // `dialogRef.current.focus()` puxava o foco do input de volta para o container.
+  // Sintoma: o campo aceitava um caractere e parava de registrar.
   useEffect(() => {
-    if (open) {
-      previousActiveElement.current = document.activeElement;
-      document.body.style.overflow = "hidden";
-      setTimeout(() => dialogRef.current?.focus(), 0);
-    } else {
+    if (!open) return;
+    previousActiveElement.current = document.activeElement;
+    document.body.style.overflow = "hidden";
+    const timer = setTimeout(() => dialogRef.current?.focus(), 0);
+    return () => {
+      clearTimeout(timer);
       document.body.style.overflow = "";
+      // Devolve o foco a quem abriu o modal.
       if (previousActiveElement.current instanceof HTMLElement) {
         previousActiveElement.current.focus();
       }
-    }
-    if (open) window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.body.style.overflow = "";
-      window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open, onClose, handleKeyDown]);
+  }, [open]);
+
+  // Teclado em efeito separado: re-registrar o listener e barato e nao mexe no foco.
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, handleKeyDown]);
 
   if (!open) return null;
 

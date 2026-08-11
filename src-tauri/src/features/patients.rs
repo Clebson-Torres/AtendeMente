@@ -159,14 +159,19 @@ pub async fn migrate_plaintext_pii(db: &SqlitePool, user_id: &str) -> Result<u64
             }
         }
 
+        // Normalize empty strings to None, exactly like `input_to_pii` does on the
+        // write path. Older rows can hold `''` instead of NULL, and carrying that
+        // through produced `Some("")` in the blob plus a junk empty row in the
+        // search index.
+        let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
         let pii = PatientPii {
-            phone: row.phone.clone(),
-            email: row.email.clone(),
-            birth_date: row.birth_date.clone(),
-            emergency_phone: row.emergency_phone.clone(),
-            health_history: row.health_history.clone(),
-            medications_in_use: row.medications_in_use.clone(),
-            admin_notes: row.admin_notes.clone(),
+            phone: non_empty(&row.phone),
+            email: non_empty(&row.email),
+            birth_date: non_empty(&row.birth_date),
+            emergency_phone: non_empty(&row.emergency_phone),
+            health_history: non_empty(&row.health_history),
+            medications_in_use: non_empty(&row.medications_in_use),
+            admin_notes: non_empty(&row.admin_notes),
         };
         let json = serde_json::to_string(&pii)
             .map_err(|e| AppError::internal(format!("Erro ao serializar PII: {}", e)))?;
@@ -868,6 +873,46 @@ mod tests {
             Some("bm90LXJlYWxseS1jaXBoZXI="),
             "o blob ilegivel deve ter sido substituido"
         );
+    }
+
+    /// Legacy rows can hold `''` instead of NULL. Those must not become
+    /// `Some("")` in the blob nor create an empty row in the search index.
+    #[tokio::test]
+    async fn migration_normalizes_empty_strings_to_none() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400f4";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, phone, email, admin_notes, \
+             status, created_at, updated_at) \
+             VALUES ('p3', ?, 'Paciente', '11955558844', '', '   ', 'active', \
+             '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+        )
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_plaintext_pii(&db, user_id).await.unwrap();
+
+        let p = get_patient_detail(&db, user_id, "p3").await.unwrap();
+        assert_eq!(p.phone.as_deref(), Some("11955558844"));
+        assert!(p.email.is_none(), "email vazio deve virar None, nao Some(\"\")");
+        assert!(p.admin_notes.is_none(), "campo so com espacos deve virar None");
+
+        let tokens: Vec<(String, String)> =
+            sqlx::query_as("SELECT token_type, token_text FROM patient_search_tokens WHERE patient_id = 'p3'")
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert!(
+            !tokens.iter().any(|(_, txt)| txt.is_empty()),
+            "nenhum token vazio no indice de busca; obtido: {tokens:?}"
+        );
+        assert!(tokens.iter().any(|(t, txt)| t == "phone" && txt == "11955558844"));
     }
 
     /// An undecryptable row must not break the whole patient list.
