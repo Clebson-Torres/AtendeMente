@@ -32,9 +32,10 @@ jobs:
       - name: Production build (frontend)
         run: npm run build
 
+  # Roda tambem em tags: um release nao deve ser publicado sem os testes Rust
+  # terem passado nos tres sistemas.
   build:
     needs: quality
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
@@ -66,8 +67,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Os testes Rust cobrem criptografia, compatibilidade de backup, rate limit
+      # e sanitizacao de erros. Antes eles nunca rodavam no CI: uma regressao
+      # nesses guardas passaria sem ninguem notar.
+      - name: Rust tests
+        run: cargo test --lib --locked
+        working-directory: src-tauri
+
       - name: Build Rust backend
-        run: cargo build --bin server
+        run: cargo build --bin server --locked
         working-directory: src-tauri
 
       - name: Build frontend
@@ -84,7 +92,8 @@ jobs:
 
   release-build:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: quality
+    # Depende de `build` tambem: sem isso os testes Rust nao barravam um release.
+    needs: [quality, build]
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
