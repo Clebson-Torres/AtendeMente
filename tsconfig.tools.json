@@ -1,0 +1,16 @@
+{
+  // Type-check dos testes e dos specs e2e.
+  //
+  // Fica separado do tsconfig raiz de proposito: esse codigo usa APIs de Node
+  // (process, fs, path, Buffer), e expor os tipos de Node ao `src/` permitiria
+  // que algo como `process.env` passasse no type-check e quebrasse no navegador.
+  //
+  // `vite/client` e necessario porque os testes importam de `src/`, que usa
+  // `import.meta.env`. Declarar `types` desliga a inclusao automatica de todos
+  // os @types, entao o `src/vite-env.d.ts` nao e alcancado por este projeto.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client"]
+  },
+  "include": ["tests", "e2e"]
+}
