@@ -1,0 +1,2 @@
+ALTER TABLE sessions ADD COLUMN is_locked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN locked_at TEXT;
