@@ -875,6 +875,209 @@ mod tests {
         );
     }
 
+    fn input(nome: &str, prontuario: Option<&str>, tel: Option<&str>) -> CreatePatientInput {
+        CreatePatientInput {
+            full_name: nome.into(),
+            chart_number: prontuario.map(Into::into),
+            phone: tel.map(Into::into),
+            email: None,
+            birth_date: None,
+            health_history: None,
+            medications_in_use: None,
+            emergency_phone: None,
+            admin_notes: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_short_name_and_duplicate_name_plus_phone() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a1";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        assert!(
+            create_patient(&db, user_id, &input("Jo", None, None)).await.is_err(),
+            "nome com menos de 3 caracteres deve ser rejeitado"
+        );
+
+        create_patient(&db, user_id, &input("Maria Souza", None, Some("11911112222")))
+            .await
+            .unwrap();
+
+        // Mesmo nome + mesmo telefone = duplicata.
+        let err = create_patient(&db, user_id, &input("Maria Souza", None, Some("11911112222")))
+            .await
+            .expect_err("mesmo nome e telefone deve conflitar");
+        assert!(matches!(err, AppError::Conflict { .. }), "obtido: {err:?}");
+
+        // Mesmo nome com telefone diferente e permitido (homonimos existem).
+        create_patient(&db, user_id, &input("Maria Souza", None, Some("11933334444")))
+            .await
+            .expect("homonimo com telefone diferente deve ser aceito");
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_chart_number_but_allows_empty() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a2";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        create_patient(&db, user_id, &input("Paciente Um", Some("P001"), None)).await.unwrap();
+
+        let err = create_patient(&db, user_id, &input("Paciente Dois", Some("P001"), None))
+            .await
+            .expect_err("prontuario repetido deve conflitar");
+        assert!(matches!(err, AppError::Conflict { .. }), "obtido: {err:?}");
+
+        // Prontuario vazio nao participa da unicidade.
+        create_patient(&db, user_id, &input("Paciente Tres", None, None)).await.unwrap();
+        create_patient(&db, user_id, &input("Paciente Quatro", None, None)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn status_toggles_and_filters_the_listing() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a3";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        let p = create_patient(&db, user_id, &input("Ana Beatriz", None, None)).await.unwrap();
+        assert_eq!(p.status, "active", "paciente novo comeca ativo");
+
+        let inativo = set_patient_status(&db, user_id, &p.id, false).await.unwrap();
+        assert_eq!(inativo.status, "inactive");
+
+        let ativos = list_patients(&db, user_id, "", 1, 50, Some("active")).await.unwrap();
+        assert_eq!(ativos.total, 0, "inativo nao deve aparecer no filtro de ativos");
+
+        let inativos = list_patients(&db, user_id, "", 1, 50, Some("inactive")).await.unwrap();
+        assert_eq!(inativos.total, 1);
+
+        let todos = list_patients(&db, user_id, "", 1, 50, None).await.unwrap();
+        assert_eq!(todos.total, 1, "sem filtro deve listar independente do status");
+
+        set_patient_status(&db, user_id, &p.id, true).await.unwrap();
+        let ativos = list_patients(&db, user_id, "", 1, 50, Some("active")).await.unwrap();
+        assert_eq!(ativos.total, 1, "reativar deve devolver ao filtro de ativos");
+    }
+
+    #[tokio::test]
+    async fn searches_by_name_and_by_phone() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a4";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        create_patient(&db, user_id, &input("Carlos Eduardo", Some("P010"), Some("11987654321")))
+            .await
+            .unwrap();
+        create_patient(&db, user_id, &input("Fernanda Costa", Some("P011"), Some("11943210987")))
+            .await
+            .unwrap();
+
+        let por_nome = list_patients(&db, user_id, "Carlos", 1, 50, None).await.unwrap();
+        assert_eq!(por_nome.total, 1);
+        assert_eq!(por_nome.items[0].full_name, "Carlos Eduardo");
+
+        // Telefone esta cifrado na linha; a busca usa o indice de tokens.
+        let por_telefone = list_patients(&db, user_id, "11943210987", 1, 50, None).await.unwrap();
+        assert_eq!(por_telefone.total, 1, "busca por telefone deve usar o indice");
+        assert_eq!(por_telefone.items[0].full_name, "Fernanda Costa");
+
+        let nada = list_patients(&db, user_id, "Inexistente", 1, 50, None).await.unwrap();
+        assert_eq!(nada.total, 0);
+    }
+
+    #[tokio::test]
+    async fn pagination_reports_the_full_total() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a5";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        for i in 0..5 {
+            create_patient(&db, user_id, &input(&format!("Paciente {i:02}"), None, None))
+                .await
+                .unwrap();
+        }
+
+        let pag1 = list_patients(&db, user_id, "", 1, 2, None).await.unwrap();
+        assert_eq!(pag1.items.len(), 2);
+        assert_eq!(pag1.total, 5, "total deve refletir todos, nao a pagina");
+
+        let pag3 = list_patients(&db, user_id, "", 3, 2, None).await.unwrap();
+        assert_eq!(pag3.items.len(), 1);
+        assert_ne!(pag1.items[0].id, pag3.items[0].id);
+    }
+
+    #[tokio::test]
+    async fn patients_are_scoped_to_their_owner() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a6";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+        let outro = "550e8400-e29b-41d4-a716-4466554400ff";
+
+        let p = create_patient(&db, user_id, &input("Paciente Privado", None, None)).await.unwrap();
+
+        assert!(get_patient_detail(&db, outro, &p.id).await.is_err());
+        assert!(set_patient_status(&db, outro, &p.id, false).await.is_err());
+        let lista = list_patients(&db, outro, "", 1, 50, None).await.unwrap();
+        assert_eq!(lista.total, 0);
+    }
+
+    #[tokio::test]
+    async fn update_replaces_pii_and_keeps_it_readable() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400a7";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        let p = create_patient(&db, user_id, &input("Bruno Lima", Some("P020"), Some("11911112222")))
+            .await
+            .unwrap();
+
+        let upd = UpdatePatientInput {
+            full_name: "Bruno Lima".into(),
+            chart_number: Some("P021".into()),
+            phone: Some("11999998888".into()),
+            email: Some("bruno@test.com".into()),
+            birth_date: Some("1988-03-04".into()),
+            health_history: Some("historico novo".into()),
+            medications_in_use: None,
+            emergency_phone: None,
+            admin_notes: None,
+        };
+        let depois = update_patient(&db, user_id, &p.id, &upd).await.unwrap();
+
+        assert_eq!(depois.chart_number.as_deref(), Some("P021"));
+        assert_eq!(depois.phone.as_deref(), Some("11999998888"));
+        assert_eq!(depois.email.as_deref(), Some("bruno@test.com"));
+        assert_eq!(depois.health_history.as_deref(), Some("historico novo"));
+
+        // Nenhuma coluna em texto claro deve sobrar depois de editar.
+        let (tel, mail): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT phone, email FROM patients WHERE id = ?")
+                .bind(&p.id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(tel.is_none() && mail.is_none(), "PII nao deve ficar em claro apos update");
+
+        // E o indice de busca acompanhou o telefone novo.
+        let achou = list_patients(&db, user_id, "11999998888", 1, 50, None).await.unwrap();
+        assert_eq!(achou.total, 1, "tokens de busca devem ser reindexados no update");
+    }
+
     /// Legacy rows can hold `''` instead of NULL. Those must not become
     /// `Some("")` in the blob nor create an empty row in the search index.
     #[tokio::test]

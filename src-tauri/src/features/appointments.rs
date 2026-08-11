@@ -600,6 +600,251 @@ mod tests {
         .unwrap();
     }
 
+    fn base_input(patient_id: &str, starts: &str, ends: &str) -> CreateAppointmentInput {
+        CreateAppointmentInput {
+            patient_id: patient_id.into(),
+            starts_at: starts.into(),
+            ends_at: ends.into(),
+            status: None,
+            confirmation_status: None,
+            session_price_cents: Some(10000),
+            quick_notes: None,
+            cancel_reason: None,
+            recurrence_frequency: None,
+            recurrence_end_mode: None,
+            recurrence_until_date: None,
+            recurrence_occurrences: None,
+        }
+    }
+
+    /// Overlap used to be checked only for the first occurrence, so the rest of a
+    /// recurring series was inserted straight over whatever else was booked.
+    #[tokio::test]
+    async fn recurring_series_rejects_a_conflict_in_a_later_occurrence() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-rec-conflict";
+        let patient_id = "patient-rec-conflict";
+        seed_patient(&db, user_id, patient_id).await;
+
+        // Ja existe algo na TERCEIRA semana; a primeira esta livre.
+        create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-29T09:00:00", "2026-06-29T10:00:00"),
+        )
+        .await
+        .unwrap();
+
+        let mut serie = base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00");
+        serie.recurrence_frequency = Some("weekly".into());
+        serie.recurrence_occurrences = Some(4); // 15, 22, 29 <- conflito, 06/07
+
+        let err = create_appointment(&db, user_id, &serie)
+            .await
+            .expect_err("conflito na 3a ocorrencia deve barrar a serie inteira");
+        assert!(
+            matches!(err, AppError::Conflict { .. }),
+            "esperava Conflict, obtido: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("29/06"),
+            "o erro deve dizer qual data conflita; obtido: {err}"
+        );
+
+        // E nada da serie foi criado: so o agendamento original permanece.
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM appointments WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(total, 1, "a serie nao deve ser parcialmente criada");
+    }
+
+    #[tokio::test]
+    async fn recurring_series_is_created_when_every_slot_is_free() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-rec-livre";
+        let patient_id = "patient-rec-livre";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let mut serie = base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00");
+        serie.recurrence_frequency = Some("weekly".into());
+        serie.recurrence_occurrences = Some(3);
+
+        create_appointment(&db, user_id, &serie).await.unwrap();
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM appointments WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(total, 3);
+    }
+
+    #[tokio::test]
+    async fn rejects_overlapping_single_appointment_but_allows_adjacent() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-overlap";
+        let patient_id = "patient-overlap";
+        seed_patient(&db, user_id, patient_id).await;
+
+        create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00"),
+        )
+        .await
+        .unwrap();
+
+        // Sobreposicao parcial: barrado.
+        assert!(create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T09:30:00", "2026-06-15T10:30:00")
+        )
+        .await
+        .is_err());
+
+        // Encostado no fim do anterior: permitido.
+        create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T10:00:00", "2026-06-15T11:00:00"),
+        )
+        .await
+        .expect("horario adjacente nao e conflito");
+    }
+
+    #[tokio::test]
+    async fn rejects_end_before_start() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-datas";
+        let patient_id = "patient-datas";
+        seed_patient(&db, user_id, patient_id).await;
+
+        assert!(create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T10:00:00", "2026-06-15T09:00:00")
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn cancelling_frees_the_slot_and_records_the_reason() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-cancel";
+        let patient_id = "patient-cancel";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let appt = create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00"),
+        )
+        .await
+        .unwrap();
+
+        let cancelado = cancel_appointment(&db, user_id, &appt.id, "paciente pediu").await.unwrap();
+        assert_eq!(cancelado.status, "cancelled");
+        assert_eq!(cancelado.cancel_reason.as_deref(), Some("paciente pediu"));
+
+        // find_overlapping ignora cancelados, entao o horario volta a estar livre.
+        create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00"),
+        )
+        .await
+        .expect("horario de atendimento cancelado deve ficar livre");
+    }
+
+    /// Cancelling a series must cancel what is still to come and leave sessions
+    /// that already happened untouched — that history is the patient's record.
+    ///
+    /// Uses dates relative to now, since the cutoff is `starts_at >= now`.
+    #[tokio::test]
+    async fn cancelling_a_series_cancels_only_future_appointments() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-serie-cancel";
+        let patient_id = "patient-serie-cancel";
+        seed_patient(&db, user_id, patient_id).await;
+
+        let fmt = "%Y-%m-%dT%H:%M:%S";
+        let inicio = chrono::Utc::now() - chrono::Duration::days(8);
+        let mut serie = base_input(
+            patient_id,
+            &inicio.format(fmt).to_string(),
+            &(inicio + chrono::Duration::hours(1)).format(fmt).to_string(),
+        );
+        serie.recurrence_frequency = Some("weekly".into());
+        // Semanal a partir de -8d: -8d e -1d no passado, +6d e +13d no futuro.
+        serie.recurrence_occurrences = Some(4);
+
+        let primeiro = create_appointment(&db, user_id, &serie).await.unwrap();
+        let series_id = primeiro.series_id.clone().expect("serie deve ter id");
+
+        cancel_recurring_series(&db, user_id, &series_id).await.unwrap();
+
+        let agora = chrono::Utc::now().format(fmt).to_string();
+        let futuros_ativos: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM appointments \
+             WHERE series_id = ? AND starts_at >= ? AND status != 'cancelled'",
+        )
+        .bind(&series_id)
+        .bind(&agora)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(futuros_ativos, 0, "atendimentos futuros devem ser cancelados");
+
+        let passados_preservados: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM appointments \
+             WHERE series_id = ? AND starts_at < ? AND status != 'cancelled'",
+        )
+        .bind(&series_id)
+        .bind(&agora)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            passados_preservados, 2,
+            "sessoes que ja ocorreram nao devem ser canceladas retroativamente"
+        );
+
+        // A serie fica marcada como encerrada e nao pode ser encerrada de novo.
+        assert!(
+            cancel_recurring_series(&db, user_id, &series_id).await.is_err(),
+            "encerrar duas vezes deve falhar"
+        );
+    }
+
+    /// A user must never see or touch another user's appointments.
+    #[tokio::test]
+    async fn appointments_are_scoped_to_their_owner() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-dono";
+        let patient_id = "patient-dono";
+        seed_patient(&db, user_id, patient_id).await;
+        let outro = "user-invasor";
+
+        let appt = create_appointment(
+            &db,
+            user_id,
+            &base_input(patient_id, "2026-06-15T09:00:00", "2026-06-15T10:00:00"),
+        )
+        .await
+        .unwrap();
+
+        assert!(get_appointment_detail(&db, outro, &appt.id).await.is_err());
+        assert!(cancel_appointment(&db, outro, &appt.id, "x").await.is_err());
+        let eventos = list_calendar_events(&db, outro, "2020-01-01T00:00:00", "2030-01-01T00:00:00")
+            .await
+            .unwrap();
+        assert!(eventos.is_empty());
+    }
+
     #[tokio::test]
     async fn creating_recurring_appointment_returns_first_created_appointment() {
         let (_dir, db) = test_db().await;

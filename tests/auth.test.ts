@@ -400,11 +400,17 @@ describe("auth login flow", () => {
   });
 
   it("resetPassword calls /auth/reset-password with token and new_password", async () => {
+    let sentBody: string | undefined;
     globalThis.fetch = vi.fn().mockImplementationOnce((url: string, opts?: RequestInit) => {
       fetchCalls.push({ url: url as string, method: opts?.method || "GET" });
+      sentBody = opts?.body as string;
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ success: true, data: null }),
+        json: () =>
+          Promise.resolve({
+            success: true,
+            data: { user_id: "uid-reset", recovery_secret: "NEW1-NEW2-NEW3-NEW4" },
+          }),
       } as Response);
     });
 
@@ -414,6 +420,47 @@ describe("auth login flow", () => {
     const call = fetchCalls.find((c) => c.url === `${API}/auth/reset-password`);
     expect(call).toBeDefined();
     expect(call!.method).toBe("POST");
+    expect(JSON.parse(sentBody!)).toEqual({
+      reset_token: "reset-token-xyz",
+      new_password: "nova-senha-12345",
+    });
+  });
+
+  // O reset consome o codigo de recuperacao usado e emite um substituto. Se este
+  // contrato quebrar, o usuario fica sem via de recuperacao sem perceber.
+  it("resetPassword returns the replacement recovery code and user_id", async () => {
+    globalThis.fetch = vi.fn().mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            success: true,
+            data: { user_id: "uid-reset", recovery_secret: "NEW1-NEW2-NEW3-NEW4" },
+          }),
+      } as Response)
+    );
+
+    const auth = await import("../src/lib/auth");
+    const novo = await auth.resetPassword("reset-token-xyz", "nova-senha-12345");
+
+    expect(novo.recovery_secret).toBe("NEW1-NEW2-NEW3-NEW4");
+    // user_id e necessario para o arquivo .json de recuperacao ser aceito depois.
+    expect(novo.user_id).toBe("uid-reset");
+  });
+
+  it("resetPassword propagates the server error message", async () => {
+    globalThis.fetch = vi.fn().mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: false,
+        json: () =>
+          Promise.resolve({ success: false, message: "Token de reset expirado. Solicite novamente." }),
+      } as Response)
+    );
+
+    const auth = await import("../src/lib/auth");
+    await expect(auth.resetPassword("velho", "nova-senha-12345")).rejects.toThrow(
+      /Token de reset expirado/
+    );
   });
 
   it("restoreSession calls /auth/me when token exists", async () => {

@@ -199,4 +199,111 @@ mod tests {
         let content = get_session_record(&db, user_id, appointment_id).await.unwrap();
         assert_eq!(content, "Segunda versao");
     }
+
+    /// The session record is the most sensitive text in the app. It must be
+    /// unreadable in the database file and only come back through decryption.
+    #[tokio::test]
+    async fn record_is_not_stored_in_plaintext() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-record-cifra";
+        let patient_id = "patient-record-cifra";
+        let appointment_id = "appointment-record-cifra";
+        crate::crypto::set_pepper(&[9u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_appointment(&db, user_id, patient_id, appointment_id).await;
+
+        let segredo = "Paciente relatou crise de ansiedade apos o episodio de sexta.";
+        save_session_record(
+            &db,
+            user_id,
+            &SaveRecordInput {
+                appointment_id: appointment_id.into(),
+                patient_id: patient_id.into(),
+                content: segredo.into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let (payload, iv, tag): (String, String, String) = sqlx::query_as(
+            "SELECT encrypted_payload, iv, auth_tag FROM session_records WHERE appointment_id = ?",
+        )
+        .bind(appointment_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+        assert!(!payload.contains("ansiedade"), "o texto nao pode ficar legivel na coluna");
+        assert!(!payload.contains(segredo));
+        assert!(!iv.is_empty() && !tag.is_empty(), "iv e auth_tag devem ser gravados");
+
+        assert_eq!(get_session_record(&db, user_id, appointment_id).await.unwrap(), segredo);
+    }
+
+    #[tokio::test]
+    async fn missing_record_is_reported_as_not_found() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-record-vazio";
+        let patient_id = "patient-record-vazio";
+        let appointment_id = "appointment-record-vazio";
+        crate::crypto::set_pepper(&[9u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_appointment(&db, user_id, patient_id, appointment_id).await;
+
+        let err = get_session_record(&db, user_id, appointment_id)
+            .await
+            .expect_err("sem registro salvo deve dar not found");
+        assert!(matches!(err, AppError::NotFound { .. }), "obtido: {err:?}");
+    }
+
+    #[tokio::test]
+    async fn rejects_saving_against_an_appointment_that_is_not_yours() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-record-dono";
+        let patient_id = "patient-record-dono";
+        let appointment_id = "appointment-record-dono";
+        crate::crypto::set_pepper(&[9u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        crate::crypto::init_user_crypto("user-record-invasor").unwrap();
+        seed_appointment(&db, user_id, patient_id, appointment_id).await;
+
+        let input = SaveRecordInput {
+            appointment_id: appointment_id.into(),
+            patient_id: patient_id.into(),
+            content: "nao deveria entrar".into(),
+        };
+        assert!(
+            save_session_record(&db, "user-record-invasor", &input).await.is_err(),
+            "gravar prontuario em atendimento de outro usuario deve falhar"
+        );
+
+        // E mesmo com registro existente, outro usuario nao consegue ler.
+        save_session_record(&db, user_id, &input).await.unwrap();
+        assert!(
+            get_session_record(&db, "user-record-invasor", appointment_id).await.is_err(),
+            "ler prontuario de outro usuario deve falhar"
+        );
+    }
+
+    /// A mismatched patient_id must not let a record be attached to the wrong chart.
+    #[tokio::test]
+    async fn rejects_mismatched_patient_id() {
+        let (_dir, db) = test_db().await;
+        let user_id = "user-record-troca";
+        let patient_id = "patient-record-troca";
+        let appointment_id = "appointment-record-troca";
+        crate::crypto::set_pepper(&[9u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_appointment(&db, user_id, patient_id, appointment_id).await;
+
+        let input = SaveRecordInput {
+            appointment_id: appointment_id.into(),
+            patient_id: "outro-paciente".into(),
+            content: "conteudo".into(),
+        };
+        assert!(
+            save_session_record(&db, user_id, &input).await.is_err(),
+            "patient_id que nao casa com o atendimento deve ser rejeitado"
+        );
+    }
 }

@@ -49,3 +49,68 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
 
     response
 }
+
+#[cfg(test)]
+mod tests {
+    use super::security_headers;
+    use axum::body::Body;
+    use axum::http::{Request, Response, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    async fn respond() -> Response<Body> {
+        let app = Router::new()
+            .route("/x", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(security_headers));
+        app.oneshot(Request::builder().uri("/x").body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sets_the_expected_security_headers() {
+        let res = respond().await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let h = res.headers();
+
+        assert_eq!(h["X-Frame-Options"], "DENY");
+        assert_eq!(h["X-Content-Type-Options"], "nosniff");
+        assert_eq!(h["Referrer-Policy"], "strict-origin-when-cross-origin");
+        assert!(h["Permissions-Policy"].to_str().unwrap().contains("camera=()"));
+    }
+
+    #[tokio::test]
+    async fn csp_locks_down_the_dangerous_directives() {
+        let res = respond().await;
+        let csp = res.headers()["Content-Security-Policy"].to_str().unwrap().to_string();
+
+        // `connect-src 'self'` impede uma pagina comprometida de enviar prontuario
+        // para terceiros; os demais fecham injecao de objeto/base/form e enquadramento.
+        for exigido in [
+            "default-src 'self'",
+            "connect-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        ] {
+            assert!(csp.contains(exigido), "CSP sem {exigido:?}: {csp}");
+        }
+        assert!(
+            !csp.contains("unsafe-eval"),
+            "CSP nao deve permitir unsafe-eval: {csp}"
+        );
+    }
+
+    /// HSTS over plain HTTP is ignored by browsers and only makes the transport
+    /// look protected. It must stay absent until the server actually speaks TLS.
+    #[tokio::test]
+    async fn does_not_advertise_hsts_over_plain_http() {
+        let res = respond().await;
+        assert!(
+            !res.headers().contains_key("Strict-Transport-Security"),
+            "HSTS nao deve ser enviado enquanto o servidor fala HTTP puro"
+        );
+    }
+}
