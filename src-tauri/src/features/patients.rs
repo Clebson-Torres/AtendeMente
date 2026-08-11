@@ -133,10 +133,30 @@ pub async fn migrate_plaintext_pii(db: &SqlitePool, user_id: &str) -> Result<u64
         let patient_id = row.id.clone();
 
         if row.pii_encrypted.is_some() {
-            // Already encrypted by a double-writing version: drop the plaintext.
-            clear_plaintext_pii(db, user_id, &patient_id).await?;
-            migrated += 1;
-            continue;
+            // Only drop the plaintext once the encrypted copy is proven readable.
+            //
+            // Trusting `pii_encrypted.is_some()` was destructive: if the blob could
+            // not be decrypted — a pepper that was rotated, restored from another
+            // machine, or lost — this deleted the only surviving readable copy of
+            // the patient's contact data. Verify first, and when the blob is
+            // unreadable treat the plaintext as the source of truth and re-encrypt
+            // from it instead.
+            match decrypt_pii(&row, user_id) {
+                Ok(_) => {
+                    clear_plaintext_pii(db, user_id, &patient_id).await?;
+                    migrated += 1;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[Patients] PII cifrada do paciente {} nao pode ser lida ({}); \
+                         re-cifrando a partir das colunas em texto claro em vez de descarta-las.",
+                        patient_id,
+                        e
+                    );
+                    // Falls through to the re-encrypt path below.
+                }
+            }
         }
 
         let pii = PatientPii {
@@ -742,4 +762,137 @@ pub struct ListPatientsQuery {
 #[derive(serde::Deserialize)]
 pub struct PatientIdPath {
     pub id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_db() -> (tempfile::TempDir, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("patients-test.db");
+        let url = format!("sqlite:{}?mode=rwc", path.to_string_lossy());
+        let pool = crate::db::init_database(&url).await.unwrap();
+        (dir, pool)
+    }
+
+    async fn seed_user(db: &SqlitePool, user_id: &str) {
+        sqlx::query(
+            "INSERT INTO users (id, email, full_name, created_at, updated_at) \
+             VALUES (?, 'u@test.com', 'U', '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+        )
+        .bind(user_id)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    /// The plaintext columns must survive when the encrypted blob cannot be read.
+    ///
+    /// Regression test for a destructive bug: the migration used to drop the
+    /// plaintext whenever `pii_encrypted` was merely present, so a pepper that no
+    /// longer matched turned a recoverable row into permanent data loss.
+    #[tokio::test]
+    async fn does_not_discard_plaintext_when_the_encrypted_blob_is_unreadable() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400f1";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        // Row as an older version left it: plaintext PII *and* a blob that this
+        // key cannot decrypt (simulating a rotated/lost pepper).
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, phone, email, birth_date, \
+             admin_notes, status, created_at, updated_at, pii_encrypted, pii_iv, pii_auth_tag) \
+             VALUES ('p1', ?, 'Paciente Legado', '11999998888', 'p@test.com', '1990-05-02', \
+             'nota', 'active', '2026-01-01T00:00:00', '2026-01-01T00:00:00', \
+             'bm90LXJlYWxseS1jaXBoZXI=', 'YWFhYWFhYWFhYWFh', 'YmJiYmJiYmJiYmJiYmJiYg==')",
+        )
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let migrated = migrate_plaintext_pii(&db, user_id).await.unwrap();
+        assert_eq!(migrated, 1);
+
+        // The data is still readable through the normal path...
+        let p = get_patient_detail(&db, user_id, "p1").await.unwrap();
+        assert_eq!(p.phone.as_deref(), Some("11999998888"));
+        assert_eq!(p.email.as_deref(), Some("p@test.com"));
+        assert_eq!(p.birth_date.as_deref(), Some("1990-05-02"));
+        assert_eq!(p.admin_notes.as_deref(), Some("nota"));
+
+        // ...and it is now stored encrypted with the current key, with the
+        // plaintext columns cleared only after a readable blob replaced them.
+        let (phone, notes, blob): (Option<String>, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT phone, admin_notes, pii_encrypted FROM patients WHERE id = 'p1'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(phone.is_none(), "coluna em claro deve ter sido limpa apos re-cifrar");
+        assert!(notes.is_none());
+        assert_ne!(
+            blob.as_deref(),
+            Some("bm90LXJlYWxseS1jaXBoZXI="),
+            "o blob ilegivel deve ter sido substituido"
+        );
+    }
+
+    /// When the blob *is* readable it stays authoritative and the redundant
+    /// plaintext is removed.
+    #[tokio::test]
+    async fn drops_plaintext_when_the_encrypted_blob_is_readable() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400f2";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        let pii = PatientPii {
+            phone: Some("11912345678".into()),
+            email: None,
+            birth_date: None,
+            emergency_phone: None,
+            health_history: None,
+            medications_in_use: None,
+            admin_notes: None,
+        };
+        let enc =
+            crypto::encrypt_content(&serde_json::to_string(&pii).unwrap(), user_id).unwrap();
+
+        // Double-written row: valid blob plus a stale plaintext copy.
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, phone, status, created_at, updated_at, \
+             pii_encrypted, pii_iv, pii_auth_tag) \
+             VALUES ('p2', ?, 'Paciente', '99999999999', 'active', \
+             '2026-01-01T00:00:00', '2026-01-01T00:00:00', ?, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(&enc.encrypted_payload)
+        .bind(&enc.iv)
+        .bind(&enc.auth_tag)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        migrate_plaintext_pii(&db, user_id).await.unwrap();
+
+        let (phone, blob): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT phone, pii_encrypted FROM patients WHERE id = 'p2'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(phone.is_none(), "plaintext redundante deve ser removido");
+        assert_eq!(
+            blob.as_deref(),
+            Some(enc.encrypted_payload.as_str()),
+            "blob legivel deve ser preservado como esta"
+        );
+
+        // The blob's value wins, not the stale plaintext.
+        let p = get_patient_detail(&db, user_id, "p2").await.unwrap();
+        assert_eq!(p.phone.as_deref(), Some("11912345678"));
+    }
 }
