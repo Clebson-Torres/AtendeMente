@@ -155,14 +155,19 @@ fn resolve_frontend_dist() -> PathBuf {
 
 /// Where scheduled backups are written: `<config>/backups/<user_id>/`.
 ///
-/// Returns the path written. Note that an unencrypted bundle is a plain ZIP
-/// containing the database and decrypted attachments, so it inherits only the
-/// filesystem permissions of the user's profile directory.
+/// Callers must pass an encrypted bundle — see the scheduler. Refuses to write a
+/// plaintext one so a future change cannot reintroduce cleartext patient records
+/// on disk without tripping over this.
 async fn write_scheduled_backup(
     config: &config::AppConfig,
     user_id: &str,
     bundle: &crate::features::backup::BackupBundle,
 ) -> Result<PathBuf, std::io::Error> {
+    if !bundle.encrypted {
+        return Err(std::io::Error::other(
+            "recusando gravar backup automatico nao cifrado",
+        ));
+    }
     let dir = config
         .storage_dir
         .parent()
@@ -224,7 +229,30 @@ fn start_backup_scheduler(state: Arc<AppState>) {
                     _ => false,
                 };
                 if should_backup {
-                    match crate::features::backup::create_backup(&db, &state.config, user_id).await {
+                    // A scheduled backup is a full copy of the database plus the
+                    // decrypted attachments. Writing that to disk unencrypted put
+                    // every patient record in a file that gets copied to pen drives
+                    // and cloud-synced folders, so it is encrypted or not written
+                    // at all — never plaintext.
+                    let Some(password) = config::load_backup_password() else {
+                        tracing::warn!(
+                            "[BackupScheduler] Backup automatico ativo para {} mas sem senha \
+                             configurada; nada foi gravado. Defina a senha em Configuracoes.",
+                            user_id
+                        );
+                        // Deliberately do NOT touch last_backup_at: the UI must not
+                        // claim a backup happened when no file exists.
+                        continue;
+                    };
+
+                    match crate::features::backup::create_backup_with_password(
+                        &db,
+                        &state.config,
+                        user_id,
+                        Some(&password),
+                    )
+                    .await
+                    {
                         Ok(bundle) => {
                             // The bundle used to be built and dropped here, so the
                             // scheduled backup produced no file while still marking
@@ -237,7 +265,7 @@ fn start_backup_scheduler(state: Arc<AppState>) {
                                     )
                                     .await;
                                     tracing::info!(
-                                        "Backup automatico criado: {}",
+                                        "Backup automatico criado (cifrado): {}",
                                         path.display()
                                     );
                                 }
@@ -406,6 +434,94 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
             e
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod scheduled_backup_tests {
+    use super::write_scheduled_backup;
+    use crate::config::AppConfig;
+    use crate::features::backup::BackupBundle;
+    use std::collections::BTreeMap;
+
+    fn config(tmp: &tempfile::TempDir) -> AppConfig {
+        AppConfig {
+            database_url: String::new(),
+            auth_database_url: String::new(),
+            server_port: 3001,
+            master_pepper: [0u8; 32],
+            storage_dir: tmp.path().join("uploads"),
+        }
+    }
+
+    fn bundle(encrypted: bool) -> BackupBundle {
+        BackupBundle {
+            file_name: if encrypted {
+                "backup_20260101_000000.atendemente".into()
+            } else {
+                "backup_20260101_000000.zip".into()
+            },
+            bytes: b"conteudo do backup".to_vec(),
+            manifest: crate::features::backup::BackupManifest {
+                version: 2,
+                created_at: "2026-01-01T00:00:00.000Z".into(),
+                user_id: "u1".into(),
+                app_version: "test".into(),
+                file_hashes: BTreeMap::new(),
+                encrypted: if encrypted { Some(true) } else { None },
+                kdf: None,
+                salt: None,
+                pepper: None,
+                pepper_fingerprint: None,
+            },
+            encrypted,
+        }
+    }
+
+    /// A scheduled backup is the whole database plus decrypted attachments. It
+    /// must never land on disk in the clear, no matter which caller asks.
+    #[tokio::test]
+    async fn refuses_to_write_an_unencrypted_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config(&tmp);
+
+        let err = write_scheduled_backup(&cfg, "u1", &bundle(false))
+            .await
+            .expect_err("bundle em texto claro deve ser recusado");
+        assert!(
+            err.to_string().contains("nao cifrado"),
+            "erro inesperado: {err}"
+        );
+
+        // And nothing was created on disk.
+        let backups_dir = tmp.path().join("backups");
+        assert!(
+            !backups_dir.exists() || std::fs::read_dir(&backups_dir).unwrap().next().is_none(),
+            "nenhum arquivo deveria ter sido gravado"
+        );
+    }
+
+    #[tokio::test]
+    async fn writes_an_encrypted_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = config(&tmp);
+
+        let path = write_scheduled_backup(&cfg, "u1", &bundle(true))
+            .await
+            .expect("bundle cifrado deve ser gravado");
+
+        assert!(path.exists());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"conteudo do backup",
+            "conteudo gravado deve bater"
+        );
+        assert!(
+            path.to_string_lossy().contains("backups"),
+            "deve ficar sob backups/<user_id>: {}",
+            path.display()
+        );
+        assert!(path.extension().unwrap() == "atendemente");
+    }
 }
 
 #[cfg(test)]

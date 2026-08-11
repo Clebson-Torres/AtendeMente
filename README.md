@@ -44,7 +44,11 @@ Mais detalhes sobre o projeto em [clebson-torres.github.io/atendemente.app](http
 - **Timeline do paciente** — linha do tempo com consultas e pagamentos consolidados
 - **Exportação** — dados do paciente em formato ZIP, CSV de pacientes/agenda/financeiro
 - **Upload de arquivos** — anexos por consulta (armazenamento local criptografado)
-- **Backup criptografado** — exportação `.atendemente` com AES-256-GCM + senha opcional
+- **Backup criptografado** — exportação `.atendemente` com AES-256-GCM; a senha é
+  obrigatória, inclusive nos backups automáticos (um backup contém o prontuário
+  completo, então nunca é gravado em texto claro). A senha dos backups automáticos
+  fica no cofre de credenciais do sistema; sem ela não há como restaurar, e sem
+  senha definida o backup automático não é gerado.
 - **Headers de segurança** — CSP restritivo, X-Frame-Options DENY, X-Content-Type-Options nosniff
 - **Auditoria** — logs de acesso e alterações sensíveis
 

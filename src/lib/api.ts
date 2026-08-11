@@ -302,6 +302,17 @@ export const api = {
         method: "PUT",
         body: JSON.stringify({ frequency }),
       }),
+
+    /** Se existe senha para os backups automáticos. Nunca retorna a senha. */
+    getPasswordStatus: () =>
+      request<{ configured: boolean }>("/backup/password"),
+    setPassword: (password: string) =>
+      request<void>("/backup/password", {
+        method: "PUT",
+        body: JSON.stringify({ password }),
+      }),
+    clearPassword: () =>
+      request<void>("/backup/password", { method: "DELETE" }),
   },
 
 };

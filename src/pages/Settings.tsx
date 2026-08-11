@@ -16,7 +16,10 @@ export default function Settings() {
   const [frequency, setFrequency] = useState("daily");
   const [saving, setSaving] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [passwordMode, setPasswordMode] = useState<"export" | "import">("export");
+  const [passwordMode, setPasswordMode] = useState<"export" | "import" | "auto">("export");
+  // Backups automáticos rodam sem ninguém presente, então a senha fica no cofre
+  // do sistema. Só o fato de existir é exposto aqui, nunca o valor.
+  const [autoPasswordSet, setAutoPasswordSet] = useState(false);
   const [backupPassword, setBackupPassword] = useState("");
   const [backupPasswordConfirm, setBackupPasswordConfirm] = useState("");
   const [passwordError, setPasswordError] = useState("");
@@ -25,13 +28,13 @@ export default function Settings() {
 
   useEffect(() => {
     const ctrl = new AbortController();
-    api.backup
-      .getConfig()
-      .then((c) => {
+    Promise.all([api.backup.getConfig(), api.backup.getPasswordStatus()])
+      .then(([c, p]) => {
         if (!ctrl.signal.aborted) {
           setConfig(c);
           setAutoEnabled(c.frequency !== "never");
           setFrequency(c.frequency !== "never" ? c.frequency : "daily");
+          setAutoPasswordSet(p.configured);
         }
       })
       .catch(() => {})
@@ -138,6 +141,44 @@ export default function Settings() {
     }
   };
 
+  const handleSetAutoPasswordClick = () => {
+    setPasswordMode("auto");
+    setBackupPassword("");
+    setBackupPasswordConfirm("");
+    setPasswordError("");
+    setShowPasswordModal(true);
+  };
+
+  const handleConfirmAutoPassword = async () => {
+    const pw = backupPassword;
+    if (pw.length < 12) {
+      setPasswordError("Minimo 12 caracteres.");
+      return;
+    }
+    if (pw !== backupPasswordConfirm) {
+      setPasswordError("Senhas nao conferem.");
+      return;
+    }
+    setShowPasswordModal(false);
+    try {
+      await api.backup.setPassword(pw);
+      setAutoPasswordSet(true);
+      toast("Senha salva. Guarde-a: e a unica forma de restaurar esses backups.");
+    } catch (e: any) {
+      toast(e.message || "Erro ao salvar a senha", "error");
+    }
+  };
+
+  const handleClearAutoPassword = async () => {
+    try {
+      await api.backup.clearPassword();
+      setAutoPasswordSet(false);
+      toast("Senha removida. Backups automaticos nao serao mais gerados.");
+    } catch (e: any) {
+      toast(e.message || "Erro ao remover a senha", "error");
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-6 max-w-2xl mx-auto space-y-4">
@@ -196,7 +237,8 @@ export default function Settings() {
         </h2>
         <p className="text-sm text-muted-foreground">
           Configure a frequencia de backup automatico. O backup sera gerado
-          em segundo plano enquanto o servidor estiver ativo.
+          em segundo plano enquanto o aplicativo estiver aberto, sempre
+          criptografado com a senha definida abaixo.
         </p>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 cursor-pointer">
@@ -229,7 +271,48 @@ export default function Settings() {
             </Button>
           </div>
         )}
-        {autoEnabled && config?.last_backup_at && (
+        {autoEnabled && (
+          <div className="rounded-xl border p-3 space-y-2">
+            {autoPasswordSet ? (
+              <>
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Lock className="h-4 w-4 text-success" />
+                  Senha configurada
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Os backups automaticos sao gravados criptografados
+                  (<code>.atendemente</code>). Sem esta senha nao e possivel
+                  restaura-los — nem por nos.
+                </p>
+                <div className="flex gap-2 pt-1">
+                  <Button variant="outline" size="sm" onClick={handleSetAutoPasswordClick}>
+                    Alterar senha
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={handleClearAutoPassword}>
+                    Remover senha
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium text-destructive flex items-center gap-2">
+                  <Unlock className="h-4 w-4" />
+                  Nenhum backup automatico sera gerado
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Um backup contem o prontuario completo dos seus pacientes, entao
+                  ele so e gravado criptografado. Defina uma senha (min. 12
+                  caracteres) para que os backups automaticos comecem a ser feitos.
+                </p>
+                <Button size="sm" className="mt-1" onClick={handleSetAutoPasswordClick}>
+                  <Lock className="h-4 w-4 mr-2" />
+                  Definir senha
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+        {autoEnabled && autoPasswordSet && config?.last_backup_at && (
           <p className="text-xs text-muted-foreground">
             Ultimo backup: {new Date(config.last_backup_at).toLocaleString("pt-BR")}
           </p>
@@ -239,12 +322,20 @@ export default function Settings() {
       <Modal
         open={showPasswordModal}
         onClose={() => setShowPasswordModal(false)}
-        title={passwordMode === "export" ? "Proteger Backup com Senha" : "Senha do Backup"}
+        title={
+          passwordMode === "export"
+            ? "Proteger Backup com Senha"
+            : passwordMode === "auto"
+            ? "Senha dos Backups Automaticos"
+            : "Senha do Backup"
+        }
         size="sm"
       >
         <p className="text-sm text-muted-foreground mb-4">
           {passwordMode === "export"
             ? "Defina uma senha de minimo 12 caracteres para criptografar o backup."
+            : passwordMode === "auto"
+            ? "Esta senha criptografa todos os backups automaticos. Guarde-a em local seguro: sem ela os backups nao podem ser restaurados, e nao existe forma de recupera-la."
             : "Este backup esta criptografado. Informe a senha definida na exportacao."}
         </p>
         <div className="space-y-3">
@@ -256,7 +347,7 @@ export default function Settings() {
             className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
             autoFocus
           />
-          {passwordMode === "export" && (
+          {(passwordMode === "export" || passwordMode === "auto") && (
             <input
               type="password"
               placeholder="Confirmar senha"
@@ -272,10 +363,24 @@ export default function Settings() {
             Cancelar
           </Button>
           <Button
-            onClick={passwordMode === "export" ? handleConfirmExport : handleConfirmRestore}
-            disabled={passwordMode === "export" ? backupPassword.length < 12 || backupPassword !== backupPasswordConfirm : backupPassword.length < 12}
+            onClick={
+              passwordMode === "export"
+                ? handleConfirmExport
+                : passwordMode === "auto"
+                ? handleConfirmAutoPassword
+                : handleConfirmRestore
+            }
+            disabled={
+              passwordMode === "import"
+                ? backupPassword.length < 12
+                : backupPassword.length < 12 || backupPassword !== backupPasswordConfirm
+            }
           >
-            {passwordMode === "export" ? "Exportar" : "Restaurar"}
+            {passwordMode === "export"
+              ? "Exportar"
+              : passwordMode === "auto"
+              ? "Salvar senha"
+              : "Restaurar"}
           </Button>
         </div>
       </Modal>

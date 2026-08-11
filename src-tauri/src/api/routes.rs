@@ -108,6 +108,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/backup", post(create_backup_handler))
         .route("/backup/restore", post(restore_backup_handler))
         .route("/backup/config", get(get_backup_config_handler).put(set_backup_config_handler))
+        .route(
+            "/backup/password",
+            get(get_backup_password_status)
+                .put(set_backup_password)
+                .delete(clear_backup_password),
+        )
         .route("/audit/logs", get(list_audit_logs))
         .with_state(state)
 }
@@ -164,6 +170,55 @@ async fn set_backup_config_handler(
     Ok(Json(ActionResponse::<()>::success_empty("Configuracao de backup atualizada.")))
 }
 
+// ─── Automatic backup password ──────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct BackupPasswordStatus {
+    configured: bool,
+}
+
+#[derive(Deserialize)]
+struct BackupPasswordInput {
+    password: String,
+}
+
+/// Whether a password for scheduled backups exists. Never returns the password.
+async fn get_backup_password_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionResponse<BackupPasswordStatus>>, AppError> {
+    let _user = get_authenticated_user(&headers, &state).await?;
+    Ok(Json(ActionResponse::success(
+        "",
+        BackupPasswordStatus {
+            configured: crate::config::load_backup_password().is_some(),
+        },
+    )))
+}
+
+async fn set_backup_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<BackupPasswordInput>,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let _user = get_authenticated_user(&headers, &state).await?;
+    crate::config::save_backup_password(&input.password).map_err(AppError::bad_request)?;
+    Ok(Json(ActionResponse::<()>::success_empty(
+        "Senha dos backups automaticos salva.",
+    )))
+}
+
+async fn clear_backup_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let _user = get_authenticated_user(&headers, &state).await?;
+    crate::config::delete_backup_password().map_err(AppError::internal)?;
+    Ok(Json(ActionResponse::<()>::success_empty(
+        "Senha dos backups automaticos removida.",
+    )))
+}
+
 async fn create_backup_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -171,11 +226,15 @@ async fn create_backup_handler(
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    let bundle = if let Some(pass) = &input.password {
-        features::backup::create_backup_with_password(&db, &state.config, &user.id, Some(pass)).await?
-    } else {
-        features::backup::create_backup(&db, &state.config, &user.id).await?
-    };
+    // A password is required: an unencrypted bundle is the full database plus the
+    // decrypted attachments, and the UI has always sent one. Refusing here means
+    // no code path can hand out cleartext patient records as a file.
+    let pass = input.password.as_deref().ok_or_else(|| {
+        AppError::bad_request("Informe uma senha para proteger o backup.")
+    })?;
+    let bundle =
+        features::backup::create_backup_with_password(&db, &state.config, &user.id, Some(pass))
+            .await?;
     features::backup::touch_backup_timestamp(&db, &user.id).await?;
     let content_type = if bundle.encrypted { "application/octet-stream" } else { "application/zip" };
     Ok((

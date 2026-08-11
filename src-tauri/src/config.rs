@@ -6,7 +6,10 @@ use rand::RngCore;
 
 const KEYCHAIN_SERVICE: &str = "atendemente";
 const KEYCHAIN_ACCOUNT: &str = "master_pepper";
+const KEYCHAIN_BACKUP_PASSWORD: &str = "backup_password";
 pub const MAX_UPLOAD_SIZE_BYTES: u64 = 20 * 1024 * 1024;
+/// Matches the minimum the Settings UI enforces for manual backups.
+pub const MIN_AUTO_BACKUP_PASSWORD_LEN: usize = 12;
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -65,6 +68,51 @@ pub async fn clear_legacy_mobile_access_flag() {
     cfg.mobile_access_enabled = None;
     if let Err(e) = save_config_file_async(&cfg).await {
         tracing::error!("[Config] Falha ao limpar flag legada de acesso mobile: {}", e);
+    }
+}
+
+// ─── Automatic backup password ───────────────────────────────────────────────
+//
+// Scheduled backups run unattended, so the password has to be stored somewhere
+// the process can read. It lives in the OS keyring (same store as the master
+// pepper), never in the config file and never in the database.
+//
+// It is deliberately a *user-chosen password* and not a key derived from the
+// pepper: a backup encrypted with machine-local key material would be
+// unrecoverable exactly when it is needed most — after the machine is lost or
+// wiped. The user must be able to restore on a new machine, which means they
+// have to know the secret.
+
+/// The password used to encrypt scheduled backups, if the user configured one.
+pub fn load_backup_password() -> Option<String> {
+    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .filter(|p| !p.is_empty())
+}
+
+pub fn save_backup_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < MIN_AUTO_BACKUP_PASSWORD_LEN {
+        return Err(format!(
+            "A senha dos backups automaticos deve ter no minimo {} caracteres.",
+            MIN_AUTO_BACKUP_PASSWORD_LEN
+        ));
+    }
+    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
+        .map_err(|e| format!("Cofre de credenciais indisponivel: {}", e))?;
+    entry
+        .set_password(password)
+        .map_err(|e| format!("Erro ao guardar a senha no cofre: {}", e))
+}
+
+pub fn delete_backup_password() -> Result<(), String> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
+        .map_err(|e| format!("Cofre de credenciais indisponivel: {}", e))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        // Already absent is the desired end state.
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!("Erro ao remover a senha do cofre: {}", e)),
     }
 }
 
