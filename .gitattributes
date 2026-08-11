@@ -1,0 +1,15 @@
+# Arquivos de migration têm bytes load-bearing.
+#
+# O sqlx calcula SHA-384 sobre o conteúdo cru de cada arquivo e grava o resultado
+# em `_sqlx_migrations` do banco. Se um único byte mudar — inclusive um final de
+# linha — o app passa a recusar abrir TODO banco que já aplicou aquela migration,
+# com `Migrate(VersionMismatch(<versao>))`, e não inicia.
+#
+# Com `core.autocrlf=true` (default do Git for Windows) o checkout reescreveria
+# LF para CRLF nesses arquivos e quebraria instalações existentes. `-text`
+# desliga qualquer conversão: o que está no blob é o que vai para o disco.
+#
+# Consequência prática: nunca "normalize" finais de linha destes arquivos. Uma
+# migration já publicada é imutável. Para mudar o schema, crie uma nova.
+src-tauri/src/db/migrations/*.sql       -text
+src-tauri/src/db/auth_migrations/*.sql  -text
