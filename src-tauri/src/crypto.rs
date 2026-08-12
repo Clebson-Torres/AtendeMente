@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::errors::AppError;
 
+pub mod envelope;
+
 const KEY_VERSION: i32 = 1;
 
 static MASTER_PEPPER: OnceLock<[u8; 32]> = OnceLock::new();

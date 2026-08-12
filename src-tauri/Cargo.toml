@@ -52,6 +52,7 @@ sha2 = "0.10"
 toml = "0.8"
 validator = { version = "0.19", features = ["derive"] }
 argon2 = "0.5"
+zeroize = "1"
 infer = "0.16"
 log = "0.4"
 env_logger = "0.11"
