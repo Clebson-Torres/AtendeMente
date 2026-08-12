@@ -54,13 +54,121 @@ fn derive_key_inner(user_id: &str, pepper: &[u8; 32]) -> Result<[u8; 32], AppErr
 }
 
 /// Initialize user crypto on login — derives and caches the key.
+///
+/// Caminho legado: deriva do pepper, sem participacao da senha. Continua sendo
+/// usado pelos testes e pelo bootstrap do envelope, mas os handlers de
+/// autenticacao passaram a usar `unlock_user_crypto`.
 pub fn init_user_crypto(user_id: &str) -> Result<(), AppError> {
     let key = derive_user_key(user_id)?;
+    cache_key(user_id, key)
+}
+
+fn cache_key(user_id: &str, key: [u8; 32]) -> Result<(), AppError> {
     user_keys()
         .lock()
         .map_err(|_| AppError::internal("Erro ao acessar cache de chaves."))?
         .insert(user_id.to_string(), key);
     Ok(())
+}
+
+/// Carrega a chave de dados **a partir da senha**, pelo envelope.
+///
+/// Esta e a funcao que os handlers de register/login/unlock usam. Se o usuario
+/// ainda nao tem envelope — todo mundo que ja usava o app —, ele e criado aqui,
+/// na primeira autenticacao, tendo como DEK a **propria chave legada**.
+///
+/// Por que a DEK continua sendo a chave legada nesta etapa: trocar por uma chave
+/// aleatoria agora criaria um estado misto em que uns usuarios tem chave
+/// derivavel do pepper e outros nao, enquanto o caminho de restore de backup
+/// ainda deriva do pepper. A rotacao para chave aleatoria e uniforme, e vem na
+/// etapa seguinte.
+///
+/// **Esta etapa nao entrega ganho de seguranca**, e isso e intencional: enquanto
+/// `source = legacy_pepper_v1`, a chave continua derivavel do pepper do cofre, e
+/// o fallback abaixo depende disso de proposito — e o que garante que ninguem
+/// perca acesso durante a transicao. O ganho vem quando a rotacao acontece e o
+/// pepper e removido do cofre.
+pub async fn unlock_user_crypto(
+    auth_db: &sqlx::SqlitePool,
+    user_id: &str,
+    password: &str,
+    recovery_secret: Option<&str>,
+) -> Result<(), AppError> {
+    use envelope::{DekRole, DekSource, Slot};
+
+    let deks = envelope::load_deks(auth_db, user_id).await?;
+    let tem_envelope = deks.iter().any(|d| d.role == DekRole::Current);
+
+    if tem_envelope {
+        match envelope::unwrap_current(auth_db, user_id, password, &[Slot::Password]).await {
+            Ok(dek) => return cache_key(user_id, *dek.expose()),
+            Err(e) => {
+                // Enquanto a DEK for a legada, a chave e reconstruivel do pepper.
+                // Cair para esse caminho evita transformar um envelope
+                // inconsistente em perda de acesso durante a transicao. Quando a
+                // rotacao acontecer, `source` deixa de ser legacy e este ramo
+                // para de existir — e a senha passa a ser indispensavel.
+                let legada = deks
+                    .iter()
+                    .any(|d| d.role == DekRole::Current && d.source == DekSource::LegacyPepperV1);
+                if legada {
+                    tracing::warn!(
+                        "[Crypto] Nao foi possivel abrir a chave de {} pelo envelope ({}); \
+                         usando a derivacao legada do pepper. Isso so funciona porque a chave \
+                         ainda nao foi rotacionada.",
+                        user_id,
+                        e
+                    );
+                    return init_user_crypto(user_id);
+                }
+                return Err(e);
+            }
+        }
+    }
+
+    // Primeiro acesso apos a atualizacao: cria o envelope sobre a chave que o
+    // usuario ja tem, sem tocar em nenhum dado cifrado.
+    let key = derive_user_key(user_id)?;
+    let dek = envelope::Dek::from_bytes(key);
+
+    let mut wraps = vec![envelope::wrap_dek(
+        &dek,
+        password,
+        user_id,
+        Slot::Password,
+        Slot::Password.default_params(),
+    )?];
+
+    // O wrap de recuperacao exige o codigo em claro, que so existe no momento do
+    // register ou de um reset. Num login comum nao ha como cria-lo: o banco
+    // guarda apenas o hash. Para quem vem de versao anterior, ele e criado
+    // quando o codigo for rotacionado, na etapa da rotacao de chave.
+    if let Some(secret) = recovery_secret {
+        wraps.push(envelope::wrap_dek(
+            &dek,
+            secret,
+            user_id,
+            Slot::Recovery,
+            Slot::Recovery.default_params(),
+        )?);
+    }
+
+    envelope::store_dek(
+        auth_db,
+        user_id,
+        &dek,
+        DekRole::Current,
+        DekSource::LegacyPepperV1,
+        &wraps,
+    )
+    .await?;
+
+    tracing::info!(
+        "[Crypto] Envelope criado para {} com {} wrap(s). A chave de dados nao mudou.",
+        user_id,
+        wraps.len()
+    );
+    cache_key(user_id, key)
 }
 
 /// Clear user crypto on logout.

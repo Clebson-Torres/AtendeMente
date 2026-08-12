@@ -95,9 +95,17 @@ async fn register_handler(
     .await
     .map_err(|e| AppError::internal(format!("Erro ao criar usuario no app DB: {}", e)))?;
 
-    // Initialize crypto for the new user
-    crate::crypto::init_user_crypto(&result.user_id)
-        .map_err(|e| AppError::internal(format!("Erro ao iniciar criptografia: {}", e)))?;
+    // Envelope + chave de dados. O register e o unico momento em que a senha E o
+    // codigo de recuperacao existem em claro ao mesmo tempo, entao e aqui que os
+    // dois wraps podem nascer juntos.
+    crate::crypto::unlock_user_crypto(
+        &state.auth_db,
+        &result.user_id,
+        &input.password,
+        Some(&result.recovery_secret),
+    )
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao iniciar criptografia: {}", e)))?;
 
     Ok(Json(ActionResponse::success(
         "Conta criada com sucesso!",
@@ -147,8 +155,11 @@ async fn login_handler(
         }
     };
 
-    // Initialize crypto for this user
-    crate::crypto::init_user_crypto(&result.user_id)
+    // A chave de dados passa a vir da senha, pelo envelope. Para quem vem de
+    // versao anterior, o envelope e criado aqui na primeira autenticacao, tendo
+    // como DEK a propria chave que o usuario ja tinha — nenhum dado e re-cifrado.
+    crate::crypto::unlock_user_crypto(&state.auth_db, &result.user_id, &input.password, None)
+        .await
         .map_err(|e| AppError::internal(format!("Erro ao iniciar criptografia: {}", e)))?;
 
     // Open user's app DB
@@ -382,7 +393,10 @@ async fn unlock_handler(
         return Err(AppError::unauthorized("Senha incorreta."));
     }
 
-    crate::crypto::init_user_crypto(&user_id)
+    // O unlock ja verificou a senha logo acima; aqui ela e usada de novo, agora
+    // para abrir a DEK pelo envelope. Mesmo caminho do login.
+    crate::crypto::unlock_user_crypto(&state.auth_db, &user_id, &input.password, None)
+        .await
         .map_err(|e| AppError::internal(format!("Erro ao reiniciar criptografia: {}", e)))?;
 
     let user_db = state.get_or_open_user_db(&user_id).await?;

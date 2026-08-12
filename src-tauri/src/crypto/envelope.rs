@@ -693,6 +693,150 @@ mod tests {
         assert_eq!(deks[1].source, DekSource::LegacyPepperV1);
     }
 
+    // ── Bootstrap: o caminho de quem ja usava o app ─────────────────────────
+
+    #[tokio::test]
+    async fn bootstrap_cria_envelope_sem_mudar_a_chave_de_dados() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+
+        // Chave que o usuario "ja tinha", derivada do pepper.
+        let legada = crate::crypto::derive_user_key(UID).unwrap();
+        assert!(load_deks(&db, UID).await.unwrap().is_empty(), "comeca sem envelope");
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha-do-usuario", None)
+            .await
+            .unwrap();
+
+        // A chave em uso e EXATAMENTE a antiga: nenhum dado precisou ser
+        // re-cifrado nesta etapa.
+        assert_eq!(
+            crate::crypto::load_key(UID).unwrap(),
+            legada,
+            "a chave de dados nao pode mudar no bootstrap"
+        );
+
+        let deks = load_deks(&db, UID).await.unwrap();
+        assert_eq!(deks.len(), 1);
+        assert_eq!(deks[0].role, DekRole::Current);
+        assert_eq!(
+            deks[0].source,
+            DekSource::LegacyPepperV1,
+            "tem de ficar marcada como legada, e o que permite a rotacao depois"
+        );
+        // Sem o codigo de recuperacao em claro, so o wrap de senha nasce.
+        assert_eq!(deks[0].wraps.len(), 1);
+        assert_eq!(deks[0].wraps[0].slot, Slot::Password);
+
+        // E a senha agora abre a chave pelo envelope.
+        assert_eq!(
+            unwrap_current(&db, UID, "senha-do-usuario", &[Slot::Password])
+                .await
+                .unwrap()
+                .expose(),
+            &legada
+        );
+    }
+
+    /// Um segundo login nao pode criar um envelope novo — o indice unico parcial
+    /// recusaria uma segunda DEK 'current', e o login quebraria.
+    #[tokio::test]
+    async fn bootstrap_e_idempotente_entre_logins() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", None).await.unwrap();
+        let primeiro = load_deks(&db, UID).await.unwrap();
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", None).await.unwrap();
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", None).await.unwrap();
+
+        let depois = load_deks(&db, UID).await.unwrap();
+        assert_eq!(depois.len(), 1, "nao pode acumular DEKs a cada login");
+        assert_eq!(depois[0].id, primeiro[0].id, "e tem de ser a mesma linha");
+    }
+
+    /// Com o codigo de recuperacao em maos — o caso do register — os dois wraps
+    /// nascem juntos, e esquecer a senha deixa de ser perda de dados.
+    #[tokio::test]
+    async fn com_codigo_de_recuperacao_nascem_os_dois_wraps() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", Some("AAAA-BBBB-CCCC-DDDD"))
+            .await
+            .unwrap();
+
+        let deks = load_deks(&db, UID).await.unwrap();
+        assert_eq!(deks[0].wraps.len(), 2);
+        let slots: Vec<_> = deks[0].wraps.iter().map(|w| w.slot).collect();
+        assert!(slots.contains(&Slot::Password));
+        assert!(slots.contains(&Slot::Recovery));
+
+        // O codigo abre a chave sem a senha.
+        assert!(
+            unwrap_current(&db, UID, "AAAA-BBBB-CCCC-DDDD", &[Slot::Recovery])
+                .await
+                .is_ok()
+        );
+    }
+
+    /// Nesta etapa a senha errada NAO bloqueia o acesso, e isso e deliberado:
+    /// enquanto a DEK e a legada, o pepper ainda a reconstroi, e recusar aqui
+    /// transformaria um envelope inconsistente em perda de acesso durante a
+    /// transicao. O teste registra esse contrato para que a mudanca de
+    /// comportamento na rotacao seja uma decisao consciente, e nao um acidente.
+    #[tokio::test]
+    async fn enquanto_a_dek_e_legada_o_pepper_ainda_e_o_fallback() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+        let legada = crate::crypto::derive_user_key(UID).unwrap();
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha-certa", None).await.unwrap();
+        crate::crypto::clear_user_crypto(UID);
+
+        crate::crypto::unlock_user_crypto(&db, UID, "senha-ERRADA", None)
+            .await
+            .expect("com DEK legada, o fallback do pepper mantem o acesso");
+        assert_eq!(crate::crypto::load_key(UID).unwrap(), legada);
+
+        // Mas se a DEK for aleatoria (pos-rotacao), o pepper nao serve e a senha
+        // errada passa a bloquear de verdade.
+        sqlx::query("UPDATE user_deks SET source = 'random' WHERE user_id = ?")
+            .bind(UID)
+            .execute(&db)
+            .await
+            .unwrap();
+        crate::crypto::clear_user_crypto(UID);
+        assert!(
+            crate::crypto::unlock_user_crypto(&db, UID, "senha-ERRADA", None).await.is_err(),
+            "com DEK aleatoria, a senha passa a ser indispensavel"
+        );
+        // E a senha certa continua abrindo.
+        assert!(
+            crate::crypto::unlock_user_crypto(&db, UID, "senha-certa", None).await.is_ok()
+        );
+    }
+
+    /// Nao e um teste de correcao: mede quanto o usuario espera no login.
+    /// `cargo test --release --lib custo_do_kdf -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn custo_do_kdf() {
+        let dek = Dek::generate();
+        for (nome, p) in [("senha", KdfParams::PASSWORD), ("recuperacao", KdfParams::RECOVERY)] {
+            let t = std::time::Instant::now();
+            let w = wrap_dek(&dek, "segredo-de-teste", UID, Slot::Password, p).unwrap();
+            let embrulhar = t.elapsed();
+            let t = std::time::Instant::now();
+            unwrap_dek(&w, "segredo-de-teste", UID).unwrap();
+            println!(
+                "  {:12} m={:>7} KiB t={}  embrulhar {:>7.0?}  desembrulhar {:>7.0?}",
+                nome, p.m_cost, p.t_cost, embrulhar, t.elapsed()
+            );
+        }
+    }
+
     #[test]
     fn aad_label_tem_o_formato_esperado() {
         assert_eq!(
