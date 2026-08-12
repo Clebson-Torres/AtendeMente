@@ -13,3 +13,17 @@
 # migration já publicada é imutável. Para mudar o schema, crie uma nova.
 src-tauri/src/db/migrations/*.sql       -text
 src-tauri/src/db/auth_migrations/*.sql  -text
+
+# Fixtures de compatibilidade: mesma classe de problema, por outro motivo.
+#
+# Os `.atendemente` são ZIP cifrado com AES-256-GCM. Qualquer conversão de final
+# de linha corrompe o arquivo, e o erro só aparece como "falha ao descriptografar"
+# na hora do restore — sem pista de que a causa foi o checkout.
+#
+# O `.expected.json` é o golden comparado byte a byte; se o Git reescrever os
+# finais de linha, o hash muda de sistema para sistema.
+#
+# Estes arquivos são imutáveis: representam a v1.0.19 e nunca devem ser
+# regenerados. Ver src-tauri/tests/fixtures/README.md.
+*.atendemente                                    binary
+src-tauri/tests/fixtures/*.expected.json         -text

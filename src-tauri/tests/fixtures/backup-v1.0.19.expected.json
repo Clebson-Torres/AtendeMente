@@ -1,0 +1,262 @@
+{
+  "gerado_por": "AtendeMente v1.0.19",
+  "user_id": "13950f9c-f3f6-4abf-a6f7-25483a1adb56",
+  "email": "fixture@exemplo.invalid",
+  "pacientes": [
+    {
+      "id": "cb5f40a2-4c98-44af-bd22-de9d569f4fe7",
+      "caso": "1. acentos no nome (ç, ã, é) — normalizacao, ordenacao e busca",
+      "esperado": {
+        "full_name": "José da Conceição",
+        "chart_number": "P002",
+        "phone": "(11) 98888-0001",
+        "email": "jose.conceicao@exemplo.invalid",
+        "birth_date": "1980-03-12",
+        "emergency_phone": "(11) 98888-9001",
+        "health_history": "FICTICIO: ansiedade generalizada, acompanhamento desde 2024.",
+        "medications_in_use": "FICTICIO: sertralina 50mg",
+        "admin_notes": "FICTICIO: prefere sessoes pela manha.",
+        "status": "active"
+      }
+    },
+    {
+      "id": "1cb388fd-d241-474d-b61d-e903d3b0b949",
+      "caso": "2. acentos com ñ e Â — normalize_patient_name dobra ambos",
+      "esperado": {
+        "full_name": "Ângela Nuñez",
+        "chart_number": "P003",
+        "phone": "(21) 97777-0002",
+        "email": "angela.nunez@exemplo.invalid",
+        "birth_date": "1992-11-30",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: episodio depressivo leve.",
+        "medications_in_use": null,
+        "admin_notes": "FICTICIO: encaminhada por colega.",
+        "status": "active"
+      }
+    },
+    {
+      "id": "9064e17c-284d-4b2b-ba9f-b55ea9bd0b8e",
+      "caso": "3. diacriticos que normalize_patient_name NAO dobra (ä, ü, ý)",
+      "esperado": {
+        "full_name": "Jürgen Bäckström Lýdia",
+        "chart_number": "P004",
+        "phone": "(31) 96666-0003",
+        "email": "jurgen.b@exemplo.invalid",
+        "birth_date": "1975-07-04",
+        "emergency_phone": "(31) 96666-9003",
+        "health_history": "FICTICIO: insonia cronica.",
+        "medications_in_use": "FICTICIO: melatonina 3mg",
+        "admin_notes": null,
+        "status": "active"
+      }
+    },
+    {
+      "id": "99665c3c-7c61-4284-975d-f8c1bbe22f26",
+      "caso": "4. mesmo nome do #1 com telefone diferente — identity_key distinto, nao deve colidir",
+      "esperado": {
+        "full_name": "José da Conceição",
+        "chart_number": "P005",
+        "phone": "(11) 95555-0004",
+        "email": "jose.conceicao.2@exemplo.invalid",
+        "birth_date": "1988-01-21",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: homonimo do paciente 1, pessoa distinta.",
+        "medications_in_use": null,
+        "admin_notes": "FICTICIO: atencao para nao confundir com o homonimo.",
+        "status": "active"
+      }
+    },
+    {
+      "id": "b6b6c9ce-9322-473e-ba8f-6bd8bcd60be3",
+      "caso": "5. SEM telefone — identity_key termina em '::'",
+      "esperado": {
+        "full_name": "Marcos Sem Telefone",
+        "chart_number": "P006",
+        "phone": null,
+        "email": "marcos.st@exemplo.invalid",
+        "birth_date": "1970-05-05",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: contato apenas por email.",
+        "medications_in_use": null,
+        "admin_notes": null,
+        "status": "active"
+      }
+    },
+    {
+      "id": "a4e2603d-90fd-4e3a-9124-2ba48fb040df",
+      "caso": "6. chart_number NULL — fora do indice unico parcial",
+      "esperado": {
+        "full_name": "Beatriz Sem Prontuario",
+        "chart_number": null,
+        "phone": "(41) 94444-0006",
+        "email": "beatriz.sp@exemplo.invalid",
+        "birth_date": "1995-09-17",
+        "emergency_phone": "(41) 94444-9006",
+        "health_history": "FICTICIO: primeira consulta, prontuario nao atribuido.",
+        "medications_in_use": null,
+        "admin_notes": null,
+        "status": "active"
+      }
+    },
+    {
+      "id": "1bd2f5f5-df1a-431d-b714-ace0d440bd8a",
+      "caso": "7. chart_number 'P001' — baixa entropia, e o caso que torna o blind index obrigatorio",
+      "esperado": {
+        "full_name": "Carlos Prontuario Um",
+        "chart_number": "P001",
+        "phone": "(51) 93333-0007",
+        "email": "carlos.p1@exemplo.invalid",
+        "birth_date": "1983-12-25",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: transtorno de panico.",
+        "medications_in_use": "FICTICIO: clonazepam 0,5mg se necessario",
+        "admin_notes": null,
+        "status": "active"
+      }
+    },
+    {
+      "id": "411a418e-d10a-4234-903c-46df30542c51",
+      "caso": "8. email SEM '@' — split('@').next() gera duas linhas identicas de token",
+      "esperado": {
+        "full_name": "Daniela Email Estranho",
+        "chart_number": "P007",
+        "phone": "(61) 92222-0008",
+        "email": "daniela-sem-arroba",
+        "birth_date": "1991-02-14",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: email cadastrado incorretamente de proposito.",
+        "medications_in_use": null,
+        "admin_notes": null,
+        "status": "active"
+      }
+    },
+    {
+      "id": "19aaaf60-5c92-42b9-ab11-b69fd47a23bb",
+      "caso": "9. historico clinico longo (~8 KB) — blob grande",
+      "esperado": {
+        "full_name": "Eduardo Historico Longo",
+        "chart_number": "P008",
+        "phone": "(71) 91111-0009",
+        "email": "eduardo.hl@exemplo.invalid",
+        "birth_date": "1968-08-08",
+        "emergency_phone": "(71) 91111-9009",
+        "health_history": "FICTICIO: registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. registro clinico extenso para testar blob grande. ",
+        "medications_in_use": "FICTICIO: multiplas medicacoes",
+        "admin_notes": "FICTICIO: caso complexo.",
+        "status": "active"
+      }
+    },
+    {
+      "id": "3307fde8-6130-4e16-833f-ee32e13b2d74",
+      "caso": "10. unicode fora do BMP (emoji) nas anotacoes",
+      "esperado": {
+        "full_name": "Fernanda Emoji",
+        "chart_number": "P009",
+        "phone": "(81) 90000-0010",
+        "email": "fernanda.e@exemplo.invalid",
+        "birth_date": "1999-04-01",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: humor oscilante 😔➡️🙂",
+        "medications_in_use": null,
+        "admin_notes": "FICTICIO: usa emoji para descrever humor: 😀 😐 😢 🧠 ✅",
+        "status": "active"
+      }
+    },
+    {
+      "id": "03072128-3aa8-4bf5-a2d5-ac59fa00be37",
+      "caso": "11. sera desativado (status='inactive')",
+      "esperado": {
+        "full_name": "Gustavo Inativo",
+        "chart_number": "P010",
+        "phone": "(85) 98989-0011",
+        "email": "gustavo.i@exemplo.invalid",
+        "birth_date": "1979-06-19",
+        "emergency_phone": null,
+        "health_history": "FICTICIO: alta terapeutica em 2025.",
+        "medications_in_use": null,
+        "admin_notes": "FICTICIO: encerrou acompanhamento.",
+        "status": "inactive"
+      }
+    },
+    {
+      "id": "a21c0eb5-fcf5-4369-b687-ed74af7a4d9d",
+      "caso": "12. formato v1: PII nas colunas em claro, pii_encrypted NULL, sem search tokens (escrito direto no SQLite; e o unico jeito de testar migrate_plaintext_pii)",
+      "esperado": {
+        "full_name": "Helena Formato Antigo",
+        "chart_number": "P011",
+        "phone": "11977770012",
+        "email": "helena.fa@exemplo.invalid",
+        "birth_date": "1985-10-10",
+        "emergency_phone": "11977779012",
+        "health_history": "FICTICIO: registro no formato v1, PII em colunas de texto claro.",
+        "medications_in_use": "FICTICIO: nenhuma",
+        "admin_notes": "FICTICIO: este registro testa migrate_plaintext_pii.",
+        "status": "active"
+      }
+    }
+  ],
+  "total_pacientes": 12,
+  "prontuarios": [
+    {
+      "appointment_id": "479583fc-98b6-4232-a434-a7a78361c913",
+      "content": "FICTICIO: paciente relatou melhora no sono. Mantida a conduta. Acentuação: ção, ã, é, ç."
+    },
+    {
+      "appointment_id": "c3ed6462-52d7-4dcf-a04f-4d1cf4dd367f",
+      "content": "FICTICIO: primeira sessão da série. Queixa principal: ansiedade. Emoji: 🧠"
+    }
+  ],
+  "anexos": [
+    {
+      "file_id": "19fe84dd-7341-4caf-91a1-03421e6fae57",
+      "original_name": "laudo-ficticio.pdf",
+      "kind": "session_attachment",
+      "cifrado_em_disco": true,
+      "conteudo_b64": "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMTAgMTBdPj5lbmRvYmoKdHJhaWxlcjw8L1Jvb3QgMSAwIFI+PgolJUVPRgo=",
+      "caso": "anexo cifrado pela API (session_attachment)"
+    },
+    {
+      "file_id": "d14b8dcc-ecf2-4dfb-9dce-46a3ea3e6e0c",
+      "original_name": "recibo-ficticio.png",
+      "kind": "payment_receipt",
+      "cifrado_em_disco": true,
+      "conteudo_b64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==",
+      "caso": "anexo cifrado pela API (payment_receipt)"
+    },
+    {
+      "file_id": "352b5170-bae3-4736-8b1f-96bd2b253875",
+      "original_name": "anexo-em-claro-ficticio.pdf",
+      "kind": "session_attachment",
+      "cifrado_em_disco": false,
+      "conteudo_b64": "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZz4+ZW5kb2JqCnRyYWlsZXI8PC9Sb290IDEgMCBSPj4KJSVFT0YK",
+      "caso": "anexo gravado EM TEXTO CLARO no disco — exercita o passthrough de decrypt_file (crypto.rs:181-183), estado real de anexo vindo de backup"
+    }
+  ],
+  "consultas": [
+    {
+      "id": "479583fc-98b6-4232-a434-a7a78361c913",
+      "caso": "consulta concluida, com prontuario e pagamento"
+    },
+    {
+      "id": "c3ed6462-52d7-4dcf-a04f-4d1cf4dd367f",
+      "caso": "serie recorrente semanal, 4 ocorrencias"
+    },
+    {
+      "id": "0a5dbcc8-8108-4fdb-bb25-485883cd7652",
+      "caso": "cancelada, cancel_reason em texto claro"
+    }
+  ],
+  "pagamentos": [
+    {
+      "id": "0c695d9a-1fcc-47c3-aa81-df36331251f3",
+      "appointment_id": "479583fc-98b6-4232-a434-a7a78361c913",
+      "caso": "pago via pix, notes em claro"
+    },
+    {
+      "id": "4f4df0e6-25ce-4035-8511-ac71e3ce74ee",
+      "appointment_id": "c3ed6462-52d7-4dcf-a04f-4d1cf4dd367f",
+      "caso": "pendente, sem notes"
+    }
+  ]
+}
