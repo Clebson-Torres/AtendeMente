@@ -254,6 +254,10 @@ async fn restore_backup_handler(
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
+    // Restaurar substitui banco e anexos. Sem limite, uma sequencia de chamadas
+    // (por erro de retry na UI ou por abuso) reprocessa o bundle inteiro a cada
+    // vez, cada uma passando por Argon2id e trocando o diretorio de anexos.
+    crate::rate_limit::enforce_rate_limit(&db, "backup:restore", &user.id, 5, 3_600_000).await?;
     let data = base64_decode(&input.backup_base64)?;
     let manifest = if let Some(pass) = &input.password {
         features::backup::restore_backup_with_password(&db, &state.config, &user.id, &data, Some(pass)).await?
@@ -738,6 +742,8 @@ async fn import_commit(
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
+    // O preview era limitado a 5/h, o commit nao — e e o commit que escreve.
+    crate::rate_limit::enforce_rate_limit(&db, "import", &user.id, 5, 3_600_000).await?;
 
     let imported = crate::features::patients_import::commit_import(
         &db, &user.id, &payload.rows,

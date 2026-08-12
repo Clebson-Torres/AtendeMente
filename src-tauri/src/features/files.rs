@@ -242,15 +242,24 @@ pub async fn confirm_upload(
             "Arquivo nao encontrado no armazenamento. Faca o upload novamente.",
         ))?;
 
-    // Decrypt if encrypted
-    let data = match crypto::load_key(user_id) {
-        Ok(key) => crypto::decrypt_file(&raw, &key)
-            .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?,
-        Err(_) => {
-            tracing::warn!("[Files] Chave de criptografia indisponivel, servindo arquivo sem descriptografia");
-            raw
-        }
-    };
+    // Sem a chave, NAO seguir adiante.
+    //
+    // O fallback anterior servia o ciphertext como se fosse o conteudo. Como o
+    // ciphertext e maior que o texto claro, a validacao de tamanho logo abaixo
+    // era sempre falsa e o bloco de rejeicao APAGAVA o arquivo do usuario e
+    // marcava a linha como excluida. Bastava a tela bloquear ou o backend
+    // reiniciar durante um upload para o anexo ser destruido.
+    //
+    // "Sem chave" e uma condicao transitoria — a resposta certa e pedir
+    // desbloqueio e preservar o arquivo, nunca confundir com "arquivo invalido".
+    let key = crypto::load_key(user_id).map_err(|_| {
+        AppError::unauthorized(
+            "Sessao bloqueada: desbloqueie o aplicativo para concluir o envio. \
+             O arquivo foi preservado.",
+        )
+    })?;
+    let data = crypto::decrypt_file(&raw, &key)
+        .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?;
 
     // Verify plaintext size matches declared size
     if data.len() != file.byte_size as usize {
@@ -323,14 +332,15 @@ pub async fn download_file(
         .await
         .map_err(|_| AppError::not_found("Arquivo nao encontrado no disco."))?;
 
-    let data = match crypto::load_key(user_id) {
-        Ok(key) => crypto::decrypt_file(&raw, &key)
-            .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?,
-        Err(_) => {
-            tracing::warn!("[Files] Chave de criptografia indisponivel, servindo arquivo sem descriptografia");
-            raw
-        }
-    };
+    // Sem a chave, recusar. Servir o ciphertext entregava bytes ilegiveis com
+    // status 200 e nome de arquivo legitimo: o usuario salvaria um PDF corrompido
+    // sem entender por que, e um anexo assim tem tudo para ser confundido com
+    // perda de dado.
+    let key = crypto::load_key(user_id).map_err(|_| {
+        AppError::unauthorized("Sessao bloqueada: desbloqueie o aplicativo para baixar o anexo.")
+    })?;
+    let data = crypto::decrypt_file(&raw, &key)
+        .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?;
 
     audit::write_audit_log(
         db,
@@ -503,6 +513,105 @@ mod tests {
             .expect("upload session should be created");
 
         assert!(!file_id.is_empty());
+    }
+
+    /// Sem a chave, `confirm_upload` APAGAVA o arquivo do usuario.
+    ///
+    /// O fallback servia o ciphertext como se fosse o conteudo; como ele e maior
+    /// que o texto claro, a validacao de tamanho reprovava sempre e o bloco de
+    /// rejeicao fazia `remove_file` + soft delete. Bastava a tela bloquear ou o
+    /// backend reiniciar durante um upload. Agora e 401 e o arquivo fica.
+    #[tokio::test]
+    async fn confirm_upload_sem_chave_preserva_o_arquivo() {
+        let (tmp, db) = test_db().await;
+        let config = test_config(&tmp);
+        let user_id = "550e8400-e29b-41d4-a716-4466554400aa";
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        let patient_id = "550e8400-e29b-41d4-a716-4466554400ab";
+        let appt_id = "550e8400-e29b-41d4-a716-4466554400ac";
+        seed_data(&db, user_id, patient_id, appt_id).await;
+
+        let pdf = valid_pdf_bytes();
+        let input = FileUploadRequest {
+            appointment_id: appt_id.into(),
+            patient_id: patient_id.into(),
+            payment_id: None,
+            kind: "session_attachment".into(),
+            file_name: "preservar.pdf".into(),
+            file_size: pdf.len() as i64,
+            mime_type: "application/pdf".into(),
+        };
+        let (file_id, _) = create_upload_session(&db, &config, user_id, &input)
+            .await
+            .expect("upload session");
+        write_upload_content(&db, user_id, &file_id, &pdf)
+            .await
+            .expect("write");
+
+        let caminho: String =
+            sqlx::query_scalar("SELECT storage_path FROM record_files WHERE id = ?")
+                .bind(&file_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(std::path::Path::new(&caminho).exists(), "arquivo deveria existir");
+
+        // Simula a tela bloqueada / backend reiniciado entre o upload e o confirm.
+        crate::crypto::clear_user_crypto(user_id);
+        let erro = confirm_upload(&db, &config, user_id, &file_id).await.expect_err("deveria recusar");
+
+        assert!(
+            std::path::Path::new(&caminho).exists(),
+            "o arquivo NAO pode ser apagado por falta de chave; erro foi: {:?}",
+            erro
+        );
+        let excluido: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM record_files WHERE id = ?")
+                .bind(&file_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(excluido.is_none(), "a linha nao pode ser marcada como excluida");
+
+        // Com a chave de volta, o mesmo confirm conclui normalmente.
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        confirm_upload(&db, &config, user_id, &file_id).await.expect("confirm apos desbloqueio");
+    }
+
+    /// Sem a chave, `download_file` entregava ciphertext com status 200 — o
+    /// usuario salvaria um PDF corrompido sem entender por que.
+    #[tokio::test]
+    async fn download_sem_chave_recusa_em_vez_de_servir_ciphertext() {
+        let (tmp, db) = test_db().await;
+        let config = test_config(&tmp);
+        let user_id = "550e8400-e29b-41d4-a716-4466554400ba";
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        let patient_id = "550e8400-e29b-41d4-a716-4466554400bb";
+        let appt_id = "550e8400-e29b-41d4-a716-4466554400bc";
+        seed_data(&db, user_id, patient_id, appt_id).await;
+
+        let pdf = valid_pdf_bytes();
+        let input = FileUploadRequest {
+            appointment_id: appt_id.into(),
+            patient_id: patient_id.into(),
+            payment_id: None,
+            kind: "session_attachment".into(),
+            file_name: "baixar.pdf".into(),
+            file_size: pdf.len() as i64,
+            mime_type: "application/pdf".into(),
+        };
+        let (file_id, _) = create_upload_session(&db, &config, user_id, &input).await.unwrap();
+        write_upload_content(&db, user_id, &file_id, &pdf).await.unwrap();
+        confirm_upload(&db, &config, user_id, &file_id).await.unwrap();
+
+        let (_, claro) = download_file(&db, user_id, &file_id).await.expect("download com chave");
+        assert_eq!(claro, pdf);
+
+        crate::crypto::clear_user_crypto(user_id);
+        assert!(
+            download_file(&db, user_id, &file_id).await.is_err(),
+            "sem chave o download tem de recusar, nao devolver ciphertext"
+        );
     }
 
     #[tokio::test]

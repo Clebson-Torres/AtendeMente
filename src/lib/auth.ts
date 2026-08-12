@@ -6,6 +6,15 @@ export interface AuthUserInfo {
   uid: string;
   email: string | null;
   onboarding_completed: boolean;
+  /**
+   * Sessão válida, mas sem a chave de dados carregada no backend.
+   *
+   * O token vive no sessionStorage e sobrevive a um F5; o cache de chaves morre
+   * com o processo do backend. Nesse estado a tela abria "logada" e os campos de
+   * PII vinham vazios, como se o paciente não tivesse telefone nem histórico — e
+   * uma edição a partir dali gravaria o vazio. Só `/auth/me` informa isso.
+   */
+  locked?: boolean;
 }
 
 type AuthUser = AuthUserInfo | null;
@@ -125,11 +134,17 @@ export async function completeFromStoredToken(): Promise<void> {
   const token = getStoredToken();
   if (!token) return;
   try {
-    const data = await apiRequest<{ user_id: string; email: string; onboarding_completed: boolean }>("/auth/me");
+    const data = await apiRequest<{
+      user_id: string;
+      email: string;
+      onboarding_completed: boolean;
+      locked?: boolean;
+    }>("/auth/me");
     notify({
       uid: data.user_id,
       email: data.email,
       onboarding_completed: data.onboarding_completed,
+      locked: data.locked === true,
     });
   } catch {
     clearToken();

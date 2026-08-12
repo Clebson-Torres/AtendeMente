@@ -58,6 +58,10 @@ export default function App() {
         setUser(u);
         setLoading(false);
         if (!u) setLocked(false);
+        // Sessão válida sem chave no backend (F5 depois de o backend reiniciar,
+        // ou depois de um lock): pede a senha em vez de abrir a tela mostrando
+        // os campos de prontuário vazios como se fossem dados reais.
+        else if (u.locked) setLocked(true);
       });
     });
     return () => {

@@ -875,6 +875,64 @@ mod tests {
         );
     }
 
+    /// Fixa a protecao contra sobrescrita cega de um registro ilegivel.
+    ///
+    /// Se o blob de um paciente nao decifra e `list_patients` devolve a linha com
+    /// os campos vazios, a usuaria pode "corrigir" um nome em branco e confirmar
+    /// a perda. Isso hoje NAO acontece, porque `update_patient` comeca chamando
+    /// `get_patient_detail`, que propaga o erro de decifra — mas nada no codigo
+    /// dizia que essa chamada era a salvaguarda, e o `let _existing` parece
+    /// descartavel. Este teste existe para que ela nao seja removida por engano.
+    #[tokio::test]
+    async fn update_recusa_paciente_com_blob_ilegivel_em_vez_de_sobrescrever() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400f7";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        // Blob que esta chave nao abre, e nenhuma coluna em claro para cair.
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, status, created_at, updated_at, \
+             pii_encrypted, pii_iv, pii_auth_tag) \
+             VALUES ('ilegivel', ?, 'Paciente Ilegivel', 'active', \
+             '2026-01-01T00:00:00', '2026-01-01T00:00:00', \
+             'bm90LXJlYWxseS1jaXBoZXI=', 'YWFhYWFhYWFhYWFh', 'YmJiYmJiYmJiYmJiYmJiYg==')",
+        )
+        .bind(user_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let alteracao = UpdatePatientInput {
+            full_name: "Nome Corrigido".into(),
+            chart_number: None,
+            phone: None,
+            email: None,
+            birth_date: None,
+            health_history: None,
+            medications_in_use: None,
+            emergency_phone: None,
+            admin_notes: None,
+        };
+        assert!(
+            update_patient(&db, user_id, "ilegivel", &alteracao).await.is_err(),
+            "editar um registro que nao decifra tem de falhar, nunca sobrescrever"
+        );
+
+        // E o blob original continua intacto.
+        let blob: Option<String> =
+            sqlx::query_scalar("SELECT pii_encrypted FROM patients WHERE id = 'ilegivel'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(
+            blob.as_deref(),
+            Some("bm90LXJlYWxseS1jaXBoZXI="),
+            "o blob nao pode ter sido substituido"
+        );
+    }
+
     fn input(nome: &str, prontuario: Option<&str>, tel: Option<&str>) -> CreatePatientInput {
         CreatePatientInput {
             full_name: nome.into(),

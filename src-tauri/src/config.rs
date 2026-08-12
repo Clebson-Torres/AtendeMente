@@ -160,9 +160,22 @@ fn load_or_generate_pepper() -> [u8; 32] {
             );
             return decoded;
         }
-        tracing::error!(
-            "[Config] MASTER_PEPPER definida mas invalida (esperado 32 bytes em hex ou \
-             base64); ignorando e usando o pepper do cofre."
+        // Definida mas invalida: abortar, nunca degradar para o pepper do cofre.
+        //
+        // Cair para o cofre transforma um ambiente que se pretendia isolado em
+        // producao sem avisar. Aconteceu de verdade durante o desenvolvimento:
+        // um base64 de 31 bytes num servidor de teste fez o processo ler o
+        // pepper real da maquina. Naquele caso nada foi gravado, mas se o cofre
+        // estivesse vazio o passo 4 teria gerado e persistido um pepper novo —
+        // e um pepper novo sobre dados existentes os torna ilegiveis para sempre.
+        //
+        // Quem define MASTER_PEPPER esta declarando isolamento. Se o valor nao
+        // serve, a resposta certa e parar, nao adivinhar.
+        panic!(
+            "MASTER_PEPPER esta definida mas e invalida (esperado 32 bytes em hex ou base64; \
+             recebido {} caracteres). Corrija o valor ou remova a variavel — seguir com o \
+             pepper do cofre transformaria este ambiente isolado em producao.",
+            raw.chars().count()
         );
     }
 

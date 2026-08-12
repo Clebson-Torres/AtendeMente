@@ -197,6 +197,14 @@ async fn logout_handler(
         .await;
     }
     if !user_id.is_empty() {
+        // A chave de dados tem de sair da memoria no logout, nao so no lock.
+        //
+        // Antes, apenas `lock_handler` limpava o cache. Depois de um logout a
+        // chave AES continuava viva no processo, e isso vazava para o backup
+        // agendado: `collect_files` gravava os anexos decifrados no ZIP se
+        // alguem tivesse logado desde o boot, e cifrados se nao — o mesmo
+        // comando produzia dois formatos diferentes.
+        crate::crypto::clear_user_crypto(&user_id);
         state.clear_user_db_for_user(&user_id).await;
     }
     Ok(Json(ActionResponse::<()>::success_empty("Sessão encerrada.")))
@@ -218,6 +226,16 @@ async fn me_handler(
     // Re-open user's app DB (useful after page refresh)
     state.get_or_open_user_db(&user_id).await?;
 
+    // A sessao pode estar valida sem a chave de dados estar carregada: o token
+    // vive no sessionStorage e sobrevive a um F5, e o cache de chaves morre com
+    // o processo do backend. Nesse estado o app respondia 200 "logado" e a tela
+    // abria com os campos de PII vazios, como se o paciente nao tivesse
+    // telefone nem historico — e uma edicao a partir dali gravaria o vazio.
+    //
+    // Reportar `locked` deixa o frontend pedir a senha em vez de mostrar dado
+    // ausente como se fosse dado real.
+    let locked = crate::crypto::load_key(&user_id).is_err();
+
     Ok(Json(ActionResponse::success(
         "",
         serde_json::json!({
@@ -225,6 +243,7 @@ async fn me_handler(
             "email": email,
             "full_name": full_name,
             "onboarding_completed": onboarding_completed,
+            "locked": locked,
         }),
     )))
 }
@@ -268,6 +287,17 @@ async fn reset_password_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<ResetPasswordInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    // O `/auth/recover` e limitado a 3/15min, mas este passo nao tinha limite:
+    // o reset_token e um UUID de 5 minutos e, sem limite, era atacavel por forca bruta.
+    crate::rate_limit::enforce_rate_limit(
+        &state.auth_db,
+        "auth:password-reset",
+        &input.reset_token,
+        5,
+        900_000,
+    )
+    .await?;
+
     let result =
         auth_service::reset_password(&state.auth_db, &input.reset_token, &input.new_password)
             .await
@@ -326,6 +356,15 @@ async fn unlock_handler(
     let (user_id, _email, _full_name) = auth_service::validate_session(&state.auth_db, &token)
         .await
         .map_err(|e| AppError::unauthorized(e))?;
+
+    // O desbloqueio nao tinha limite nenhum no servidor. A unica protecao era um
+    // contador em `useRef` no LockScreen, que zera a cada refresh da pagina —
+    // ou seja, com um token valido em maos dava para testar senhas sem limite,
+    // e o unlock e justamente o que devolve a chave de dados. O login sempre
+    // teve 5/10min; nao faz sentido a porta de tras ser mais franca que a porta
+    // da frente.
+    crate::rate_limit::enforce_rate_limit(&state.auth_db, "auth:unlock", &user_id, 5, 600_000)
+        .await?;
 
     let password_valid = auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)
         .await
