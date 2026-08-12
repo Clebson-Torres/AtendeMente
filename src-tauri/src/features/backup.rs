@@ -273,18 +273,65 @@ pub async fn restore_backup_with_password(
         .await
         .map_err(|e| AppError::internal(format!("Erro ao escrever banco restaurado: {}", e)))?;
 
-    import_database(db, &db_path).await?;
-    restore_storage(&mut archive, &manifest, &config.storage_dir.join(user_id)).await?;
+    // Tudo que pode falhar acontece sobre a copia em area temporaria, ANTES de
+    // encostar no banco e nos anexos reais.
+    //
+    // A ordem anterior era import_database -> restore_storage -> re-cifra, e a
+    // re-cifra abortava com "no such column: key_version". O usuario recebia
+    // "erro interno" e concluia que nada tinha acontecido, mas o banco ja havia
+    // sido substituido: 11 de 12 pacientes ficavam ilegiveis, sem sequer um
+    // registro em auditoria, porque o evento fica depois do ponto que abortava.
+    // E o estado local anterior — a unica copia — ja tinha sido sobrescrito.
+    //
+    // O cenario nao e exotico: e "reinstalei o Windows e copiei minha pasta de
+    // dados". Os bancos sao arquivos e sobrevivem; o cofre de credenciais nao,
+    // entao o pepper e regenerado com o mesmo user_id.
+    let old_pepper = match &manifest.pepper {
+        Some(hex) => {
+            let bytes = hex_decode(hex)?;
+            if bytes.len() == 32 {
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&bytes);
+                Some(p)
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
 
-    // Re-encrypt PII if pepper differs
-    if let Some(pepper_hex) = &manifest.pepper {
-        let old_pepper_bytes = hex_decode(pepper_hex)?;
-        if old_pepper_bytes.len() == 32 {
-            let mut old_pepper = [0u8; 32];
-            old_pepper.copy_from_slice(&old_pepper_bytes);
-            crypto::reencrypt_all_pii(db, &old_pepper, user_id).await?;
+    if let Some(old_pepper) = old_pepper {
+        // O banco dentro do backup tem o schema da versao que o gerou, que pode
+        // nao ter `patients.key_version` (criada na migration 14). Subir as
+        // migrations na copia primeiro deixa o schema atual antes da conversao,
+        // e tambem alinha as colunas que `import_database` mapeia por nome.
+        let staged_url = format!("sqlite:{}?mode=rw", db_path.display());
+        let staged = crate::db::init_database(&staged_url)
+            .await
+            .map_err(|e| AppError::internal(format!("Erro ao preparar copia do backup: {}", e)))?;
+        let report = crypto::reencrypt_all_pii(&staged, &old_pepper, user_id).await;
+        staged.close().await;
+        let report = report?;
+        if report.patients > 0 || report.session_records > 0 {
+            tracing::info!(
+                "[Backup] Pepper do backup difere do atual; re-cifrados {} paciente(s) e {} \
+                 prontuario(s) na copia antes de importar.",
+                report.patients,
+                report.session_records
+            );
         }
     }
+
+    // Anexos: extraidos e convertidos numa area de staging, e so entao trocados
+    // pelos reais. O filesystem nao participa da transacao do SQLite, entao esta
+    // e a unica forma de nao destruir os anexos existentes por causa de uma
+    // falha de conversao.
+    let staged_storage = restore_root.join("storage");
+    stage_storage(&mut archive, &manifest, &staged_storage, old_pepper, user_id).await?;
+
+    import_database(db, &db_path).await?;
+    swap_storage(&staged_storage, &config.storage_dir.join(user_id)).await?;
+    rewrite_storage_paths(db, config, user_id).await?;
 
     // A version-1 backup stores patient PII in the legacy plaintext columns.
     // Encrypt it now that the rows are in place; best-effort so a restore never
@@ -629,32 +676,146 @@ async fn import_attached_database(conn: &mut sqlx::SqliteConnection) -> Result<(
     Ok(())
 }
 
-async fn restore_storage<R: Read + std::io::Seek>(
+/// Extrai os anexos do bundle para uma area de staging, convertendo a chave
+/// quando o pepper do backup difere do atual.
+///
+/// Nada dos anexos reais e tocado aqui: se a conversao falhar, quem chama
+/// retorna erro e o que estava em disco continua intacto.
+async fn stage_storage<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     manifest: &BackupManifest,
-    target_root: &Path,
+    staging_root: &Path,
+    old_pepper: Option<[u8; 32]>,
+    user_id: &str,
 ) -> Result<(), AppError> {
-    if target_root.exists() {
-        tokio::fs::remove_dir_all(target_root)
-            .await
-            .map_err(|e| AppError::internal(format!("Erro ao limpar anexos: {}", e)))?;
-    }
-    tokio::fs::create_dir_all(target_root)
+    tokio::fs::create_dir_all(staging_root)
         .await
-        .map_err(|e| AppError::internal(format!("Erro ao recriar anexos: {}", e)))?;
+        .map_err(|e| AppError::internal(format!("Erro ao preparar anexos: {}", e)))?;
 
+    let mut convertidos = 0usize;
     for path in manifest.file_hashes.keys().filter(|p| p.starts_with("storage/")) {
         let relative = path.trim_start_matches("storage/");
-        let target = safe_join(target_root, relative)?;
+        let target = safe_join(staging_root, relative)?;
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| AppError::internal(format!("Erro ao criar diretorio de anexo: {}", e)))?;
         }
         let bytes = read_zip_entry(archive, path)?;
+        let bytes = match old_pepper {
+            Some(p) => {
+                let out = crypto::reencrypt_file_bytes(&bytes, &p, user_id).map_err(|_| {
+                    AppError::bad_request(format!(
+                        "Nao foi possivel converter o anexo '{}' para a chave desta maquina. \
+                         Nada foi alterado.",
+                        relative
+                    ))
+                })?;
+                convertidos += 1;
+                out
+            }
+            None => bytes,
+        };
         tokio::fs::write(&target, bytes)
             .await
-            .map_err(|e| AppError::internal(format!("Erro ao restaurar anexo: {}", e)))?;
+            .map_err(|e| AppError::internal(format!("Erro ao preparar anexo: {}", e)))?;
+    }
+    if convertidos > 0 {
+        tracing::info!("[Backup] {} anexo(s) re-cifrados na area de staging.", convertidos);
+    }
+    Ok(())
+}
+
+/// Reaponta `record_files.storage_path` para o layout desta maquina.
+///
+/// `download_file` le o caminho **absoluto** gravado no momento do upload
+/// (`files.rs`, `Path::new(&file.storage_path)`), e `import_database` copia essa
+/// coluna verbatim. Sem esta reescrita, restaurar num computador diferente — ou
+/// so numa conta de usuario diferente, ou com outro `STORAGE_DIR` — deixa
+/// **todos** os anexos inalcancaveis: as linhas apontam para um caminho que nao
+/// existe ali, ainda que os arquivos tenham sido restaurados corretamente.
+///
+/// O nome do arquivo e preservado, porque e ele que veio no ZIP; so a parte da
+/// raiz e trocada. O layout e deterministico:
+/// `<storage_dir>/<user_id>/<patient_id>/<appointment_id>/<uuid>.<ext>`.
+async fn rewrite_storage_paths(
+    db: &SqlitePool,
+    config: &AppConfig,
+    user_id: &str,
+) -> Result<(), AppError> {
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        r#"SELECT id, patient_id, appointment_id, storage_path
+           FROM record_files WHERE user_id = ?"#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler anexos: {}", e)))?;
+
+    let mut ajustados = 0usize;
+    for (id, patient_id, appointment_id, antigo) in &rows {
+        // O separador pode ser o da maquina de origem, que nao e o desta.
+        let nome = antigo.rsplit(['/', '\\']).next().unwrap_or_default();
+        if nome.is_empty() {
+            continue;
+        }
+        let novo = config
+            .storage_dir
+            .join(user_id)
+            .join(patient_id)
+            .join(appointment_id)
+            .join(nome);
+        let novo = novo.to_string_lossy().to_string();
+        if &novo == antigo {
+            continue;
+        }
+        sqlx::query("UPDATE record_files SET storage_path = ? WHERE id = ?")
+            .bind(&novo)
+            .bind(id)
+            .execute(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Erro ao reapontar anexo: {}", e)))?;
+        ajustados += 1;
+    }
+    if ajustados > 0 {
+        tracing::info!(
+            "[Backup] {} anexo(s) reapontados para o layout desta maquina.",
+            ajustados
+        );
+    }
+    Ok(())
+}
+
+/// Troca o diretorio de anexos real pelo que foi preparado no staging.
+///
+/// O antigo e movido para o lado antes de o novo entrar, e so removido quando o
+/// novo esta no lugar — assim uma falha no meio nao deixa o usuario sem anexo
+/// nenhum.
+async fn swap_storage(staging_root: &Path, target_root: &Path) -> Result<(), AppError> {
+    if let Some(parent) = target_root.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| AppError::internal(format!("Erro ao preparar anexos: {}", e)))?;
+    }
+
+    let backup_side = target_root.with_extension(format!("pre-restore-{}", Uuid::new_v4()));
+    let had_previous = target_root.exists();
+    if had_previous {
+        tokio::fs::rename(target_root, &backup_side)
+            .await
+            .map_err(|e| AppError::internal(format!("Erro ao reservar anexos atuais: {}", e)))?;
+    }
+
+    if let Err(e) = tokio::fs::rename(staging_root, target_root).await {
+        // Falhou ao instalar o novo: devolve o antigo para o lugar.
+        if had_previous {
+            let _ = tokio::fs::rename(&backup_side, target_root).await;
+        }
+        return Err(AppError::internal(format!("Erro ao restaurar anexos: {}", e)));
+    }
+
+    if had_previous {
+        let _ = tokio::fs::remove_dir_all(&backup_side).await;
     }
     Ok(())
 }
@@ -840,6 +1001,146 @@ mod tests {
         let invalid = super::restore_backup(&restore_db, &restore_config, user_id, b"not a zip").await;
         assert!(invalid.is_err());
         drop(restore_dir);
+    }
+
+    // ── Portao de compatibilidade com a v1.0.19 ─────────────────────────────
+    //
+    // Restaura os bundles congelados em tests/fixtures/ e confere a PII
+    // decifrada contra o golden, campo por campo. Roda com um pepper diferente
+    // do que gerou o fixture, que e o cenario "reinstalei o Windows e copiei
+    // minha pasta de dados": os bancos sao arquivos e sobrevivem, o cofre de
+    // credenciais nao, entao o pepper e regenerado com o mesmo user_id.
+    //
+    // Antes da correcao este teste falhava com "no such column: key_version" —
+    // e o pior nao era a falha, era o estado que ela deixava: banco e anexos ja
+    // substituidos, 11 de 12 pacientes ilegiveis, nada em auditoria.
+    //
+    // Ver tests/fixtures/README.md.
+    const FIXTURE_PEPPER: &[u8; 32] = b"fixture-pepper-de-teste-32bytes!";
+    const FIXTURE_BACKUP_PASSWORD: &str = "SenhaDoBackupFixture#2026";
+
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    fn golden() -> serde_json::Value {
+        let raw = std::fs::read_to_string(fixture_path("backup-v1.0.19.expected.json"))
+            .expect("golden do fixture ausente");
+        serde_json::from_str(&raw).expect("golden invalido")
+    }
+
+    async fn restaura_fixture_e_confere(bundle: &str) {
+        // `set_pepper` e OnceLock: se outro teste ja definiu, o dele vale. Nao
+        // importa qual seja, desde que difira do pepper do fixture — e nenhum
+        // dos usados nos testes ([3;32], [7;32], [9;32], [0xab;32]) coincide com
+        // texto ASCII. O assert abaixo garante que o caminho de conversao roda.
+        crate::crypto::set_pepper(&[7u8; 32]);
+        let atual = crate::crypto::get_pepper().expect("pepper nao inicializado");
+        assert_ne!(
+            atual, FIXTURE_PEPPER,
+            "o teste precisa de um pepper diferente do que gerou o fixture"
+        );
+
+        let g = golden();
+        let user_id = g["user_id"].as_str().unwrap().to_string();
+
+        let (_dir, db, config) = test_db("fixture-v1019").await;
+        seed_user(&db, &user_id).await;
+
+        let bytes = std::fs::read(fixture_path(bundle)).expect("bundle do fixture ausente");
+        super::restore_backup_with_password(
+            &db,
+            &config,
+            &user_id,
+            &bytes,
+            Some(FIXTURE_BACKUP_PASSWORD),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("restore do fixture {} falhou: {:?}", bundle, e));
+
+        // A chave desta maquina precisa estar carregada para decifrar a PII que
+        // acabou de ser convertida.
+        crate::crypto::init_user_crypto(&user_id).unwrap();
+
+        let esperados = g["pacientes"].as_array().unwrap();
+        assert_eq!(esperados.len(), 12, "o fixture deve ter 12 pacientes");
+
+        for p in esperados {
+            let id = p["id"].as_str().unwrap();
+            let caso = p["caso"].as_str().unwrap();
+            let e = &p["esperado"];
+            let lido = crate::features::patients::get_patient_detail(&db, &user_id, id)
+                .await
+                .unwrap_or_else(|err| panic!("paciente ilegivel [{}]: {:?}", caso, err));
+
+            let s = |v: &serde_json::Value| v.as_str().map(|x| x.to_string());
+            assert_eq!(Some(lido.full_name.clone()), s(&e["full_name"]), "full_name [{}]", caso);
+            assert_eq!(lido.chart_number, s(&e["chart_number"]), "chart_number [{}]", caso);
+            assert_eq!(lido.phone, s(&e["phone"]), "phone [{}]", caso);
+            assert_eq!(lido.email, s(&e["email"]), "email [{}]", caso);
+            assert_eq!(lido.birth_date, s(&e["birth_date"]), "birth_date [{}]", caso);
+            assert_eq!(lido.emergency_phone, s(&e["emergency_phone"]), "emergency_phone [{}]", caso);
+            assert_eq!(lido.health_history, s(&e["health_history"]), "health_history [{}]", caso);
+            assert_eq!(lido.medications_in_use, s(&e["medications_in_use"]), "medications [{}]", caso);
+            assert_eq!(lido.admin_notes, s(&e["admin_notes"]), "admin_notes [{}]", caso);
+            assert_eq!(Some(lido.status.clone()), s(&e["status"]), "status [{}]", caso);
+        }
+
+        // Os prontuarios de sessao tambem precisam abrir: eram o artefato que a
+        // re-cifra antiga nao cobria, e por isso ficavam silenciosamente ilegiveis.
+        for r in g["prontuarios"].as_array().unwrap() {
+            let ap = r["appointment_id"].as_str().unwrap();
+            let esperado = r["content"].as_str().unwrap();
+            let lido = crate::features::records::get_session_record(&db, &user_id, ap)
+                .await
+                .unwrap_or_else(|e| panic!("prontuario de {} ilegivel: {:?}", ap, e));
+            assert_eq!(lido, esperado, "conteudo do prontuario de {}", ap);
+        }
+
+        // E os anexos: devem existir em disco e abrir com a chave desta maquina.
+        let key = crate::crypto::load_key(&user_id).unwrap();
+        for a in g["anexos"].as_array().unwrap() {
+            let nome = a["original_name"].as_str().unwrap();
+            let esperado = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                a["conteudo_b64"].as_str().unwrap(),
+            )
+            .unwrap();
+            let fid = a["file_id"].as_str().unwrap();
+            // Le pelo `storage_path` do banco, e nao varrendo o diretorio: e
+            // exatamente o que `download_file` faz, entao o teste tambem prova
+            // que o download funciona depois do restore.
+            let caminho: String =
+                sqlx::query_scalar("SELECT storage_path FROM record_files WHERE id = ?")
+                    .bind(fid)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap_or_else(|e| panic!("anexo {} ausente no banco: {:?}", nome, e));
+            let bytes = std::fs::read(&caminho).unwrap_or_else(|e| {
+                panic!("anexo {} nao esta em {}: {:?}", nome, caminho, e)
+            });
+            let claro = crate::crypto::decrypt_file(&bytes, &key)
+                .unwrap_or_else(|e| panic!("anexo {} nao decifra: {:?}", nome, e));
+            assert_eq!(claro, esperado, "conteudo do anexo {}", nome);
+        }
+    }
+
+
+    #[tokio::test]
+    async fn restaura_fixture_v1019_agendado_com_pepper_diferente() {
+        // Bundle feito SEM sessao de cripto: o paciente 12 esta no formato v1
+        // (PII em colunas de texto claro) e os anexos entraram cifrados no ZIP.
+        restaura_fixture_e_confere("backup-v1.0.19-agendado.atendemente").await;
+    }
+
+    #[tokio::test]
+    async fn restaura_fixture_v1019_interativo_com_pepper_diferente() {
+        // Bundle feito APOS login: o paciente 12 ja migrou para o blob cifrado e
+        // os anexos entraram em texto claro no ZIP.
+        restaura_fixture_e_confere("backup-v1.0.19-interativo.atendemente").await;
     }
 
     #[tokio::test]

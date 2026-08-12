@@ -191,30 +191,62 @@ pub fn decrypt_file(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
         .map_err(|_| AppError::bad_request("Falha ao descriptografar arquivo."))
 }
 
+/// Quantos registros a re-cifra converteu, por artefato.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReencryptReport {
+    pub patients: usize,
+    pub session_records: usize,
+}
+
+/// Re-cifra todo o conteudo cifrado de um banco da chave derivada de
+/// `old_pepper` para a derivada do pepper atual.
+///
+/// Tres coisas que a versao anterior errava, e que custaram caro:
+///
+/// 1. Ela selecionava `COALESCE(key_version, 1)` de `patients`, coluna que nao
+///    existia. A query falhava com "no such column" e o erro subia depois de o
+///    restore ja ter substituido banco e anexos. A migration 14 criou a coluna.
+/// 2. Ela cobria **so** `patients`. `session_records` — o prontuario de sessao,
+///    o dado mais sensivel do app — ficava cifrado com a chave antiga, sem
+///    nenhuma marcacao, silenciosamente ilegivel.
+/// 3. Ela gravava fora de transacao, um UPDATE por vez. Uma falha no meio
+///    deixava metade das linhas em cada chave.
+///
+/// Agora roda numa transacao unica: ou o banco inteiro converte, ou nada muda.
+/// Os anexos em disco nao passam por aqui — eles nao participam da transacao do
+/// SQLite e sao convertidos por quem chama, sobre uma copia em area temporaria.
 pub async fn reencrypt_all_pii(
     db: &sqlx::SqlitePool,
     old_pepper: &[u8; 32],
     user_id: &str,
-) -> Result<(), AppError> {
+) -> Result<ReencryptReport, AppError> {
     let current_pepper = MASTER_PEPPER
         .get()
         .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
 
     if old_pepper == current_pepper {
-        return Ok(());
+        return Ok(ReencryptReport::default());
     }
 
+    let old_key = derive_key_inner(user_id, old_pepper)?;
+    let new_key = derive_key_inner(user_id, current_pepper)?;
+
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao iniciar re-cifra: {}", e)))?;
+
+    let mut report = ReencryptReport::default();
+
+    // ── patients.pii_* ──────────────────────────────────────────────────────
     let rows: Vec<(String, String, String, String, i32)> = sqlx::query_as(
         r#"SELECT id, pii_encrypted, pii_iv, pii_auth_tag, COALESCE(key_version, 1)
         FROM patients WHERE user_id = ? AND pii_encrypted IS NOT NULL"#,
     )
     .bind(user_id)
-    .fetch_all(db)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| AppError::internal(format!("Erro ao ler PII: {}", e)))?;
-
-    let old_key = derive_key_inner(user_id, old_pepper)?;
-    let new_key = derive_key_inner(user_id, current_pepper)?;
 
     for (id, enc, iv, tag, kv) in &rows {
         let payload = EncryptedPayload {
@@ -223,21 +255,102 @@ pub async fn reencrypt_all_pii(
             auth_tag: tag.clone(),
             key_version: *kv,
         };
-        let plaintext = decrypt_content_with_key(&payload, &old_key)?;
-        let new_payload = encrypt_content_with_key(&plaintext, &new_key)?;
+        // Verify-before-discard: se nao abre com a chave antiga, aborta a
+        // transacao inteira em vez de gravar lixo sobre dado possivelmente bom.
+        let plaintext = decrypt_content_with_key(&payload, &old_key).map_err(|_| {
+            AppError::bad_request(format!(
+                "Nao foi possivel decifrar a PII do paciente {} com a chave do backup. \
+                 Nada foi alterado.",
+                id
+            ))
+        })?;
+        let np = encrypt_content_with_key(&plaintext, &new_key)?;
         sqlx::query(
-            r#"UPDATE patients SET pii_encrypted = ?, pii_iv = ?, pii_auth_tag = ? WHERE id = ?"#,
+            r#"UPDATE patients
+               SET pii_encrypted = ?, pii_iv = ?, pii_auth_tag = ?, key_version = ?
+               WHERE id = ?"#,
         )
-        .bind(&new_payload.encrypted_payload)
-        .bind(&new_payload.iv)
-        .bind(&new_payload.auth_tag)
+        .bind(&np.encrypted_payload)
+        .bind(&np.iv)
+        .bind(&np.auth_tag)
+        .bind(np.key_version)
         .bind(id)
-        .execute(db)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::internal(format!("Erro ao atualizar PII: {}", e)))?;
+        report.patients += 1;
     }
 
-    Ok(())
+    // ── session_records: o prontuario, que a versao anterior nao tocava ──────
+    let recs: Vec<(String, String, String, String, i32)> = sqlx::query_as(
+        r#"SELECT id, encrypted_payload, iv, auth_tag, COALESCE(key_version, 1)
+        FROM session_records WHERE user_id = ?"#,
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler prontuarios: {}", e)))?;
+
+    for (id, enc, iv, tag, kv) in &recs {
+        let payload = EncryptedPayload {
+            encrypted_payload: enc.clone(),
+            iv: iv.clone(),
+            auth_tag: tag.clone(),
+            key_version: *kv,
+        };
+        let plaintext = decrypt_content_with_key(&payload, &old_key).map_err(|_| {
+            AppError::bad_request(format!(
+                "Nao foi possivel decifrar o prontuario {} com a chave do backup. \
+                 Nada foi alterado.",
+                id
+            ))
+        })?;
+        let np = encrypt_content_with_key(&plaintext, &new_key)?;
+        sqlx::query(
+            r#"UPDATE session_records
+               SET encrypted_payload = ?, iv = ?, auth_tag = ?, key_version = ?
+               WHERE id = ?"#,
+        )
+        .bind(&np.encrypted_payload)
+        .bind(&np.iv)
+        .bind(&np.auth_tag)
+        .bind(np.key_version)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao atualizar prontuario: {}", e)))?;
+        report.session_records += 1;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao concluir re-cifra: {}", e)))?;
+
+    Ok(report)
+}
+
+/// Converte um anexo da chave derivada de `old_pepper` para a do pepper atual.
+///
+/// Vale para os dois formatos que aparecem em backups reais: o bundle feito sem
+/// sessao guarda o anexo cifrado com a chave antiga; o feito apos login guarda
+/// em texto claro, porque `collect_files` decifra ao gravar no ZIP. O
+/// passthrough de `decrypt_file` cobre o segundo caso, e a saida sai cifrada com
+/// a chave atual nos dois — inclusive no que entrou em claro.
+pub fn reencrypt_file_bytes(
+    bytes: &[u8],
+    old_pepper: &[u8; 32],
+    user_id: &str,
+) -> Result<Vec<u8>, AppError> {
+    let current_pepper = MASTER_PEPPER
+        .get()
+        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
+    if old_pepper == current_pepper {
+        return Ok(bytes.to_vec());
+    }
+    let old_key = derive_key_inner(user_id, old_pepper)?;
+    let new_key = derive_key_inner(user_id, current_pepper)?;
+    let plaintext = decrypt_file(bytes, &old_key)?;
+    encrypt_file(&plaintext, &new_key)
 }
 
 pub fn get_pepper() -> Option<&'static [u8; 32]> {

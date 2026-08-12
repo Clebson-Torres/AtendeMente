@@ -1,0 +1,11 @@
+-- `patients` nunca teve coluna de versao de chave, mas `reencrypt_all_pii`
+-- consultava `COALESCE(key_version, 1)` sobre ela. A query falhava com
+-- "no such column: key_version" e o erro subia DEPOIS de o restore ja ter
+-- substituido o banco e os anexos: restaurar um backup numa maquina cujo pepper
+-- e diferente deixava 11 de 12 pacientes ilegiveis, sem registro em auditoria,
+-- e devolvia "erro interno" como se nada tivesse acontecido.
+--
+-- `session_records` sempre teve essa coluna (migration 1); aqui `patients`
+-- ganha a equivalente. 1 = chave derivada do pepper, que e o unico esquema que
+-- existe hoje.
+ALTER TABLE patients ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1;
