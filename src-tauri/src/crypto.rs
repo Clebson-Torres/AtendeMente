@@ -18,9 +18,22 @@ pub mod envelope;
 const KEY_VERSION: i32 = 1;
 
 static MASTER_PEPPER: OnceLock<[u8; 32]> = OnceLock::new();
-static USER_KEYS: OnceLock<Mutex<HashMap<String, [u8; 32]>>> = OnceLock::new();
+static USER_KEYS: OnceLock<Mutex<HashMap<String, KeyRing>>> = OnceLock::new();
 
-fn user_keys() -> &'static Mutex<HashMap<String, [u8; 32]>> {
+/// As chaves de dados de um usuario nesta sessao.
+///
+/// Durante a rotacao as duas coexistem: parte dos registros ainda esta sob a
+/// chave que sai, parte ja esta sob a nova. Sem guardar as duas, uma rotacao
+/// interrompida — queda de energia, app fechado no meio — deixaria metade do
+/// prontuario ilegivel ate o fim da conversao.
+#[derive(Clone)]
+pub struct KeyRing {
+    pub current: [u8; 32],
+    /// Chave anterior, presente apenas enquanto a rotacao nao terminou.
+    pub retiring: Option<[u8; 32]>,
+}
+
+fn user_keys() -> &'static Mutex<HashMap<String, KeyRing>> {
     USER_KEYS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -64,11 +77,34 @@ pub fn init_user_crypto(user_id: &str) -> Result<(), AppError> {
 }
 
 fn cache_key(user_id: &str, key: [u8; 32]) -> Result<(), AppError> {
+    cache_keyring(user_id, KeyRing { current: key, retiring: None })
+}
+
+fn cache_keyring(user_id: &str, ring: KeyRing) -> Result<(), AppError> {
     user_keys()
         .lock()
         .map_err(|_| AppError::internal("Erro ao acessar cache de chaves."))?
-        .insert(user_id.to_string(), key);
+        .insert(user_id.to_string(), ring);
     Ok(())
+}
+
+/// Chaveiro completo do usuario, com a chave que esta saindo se houver.
+pub fn load_keyring(user_id: &str) -> Result<KeyRing, AppError> {
+    user_keys()
+        .lock()
+        .map_err(|_| AppError::internal("Erro ao acessar cache de chaves."))?
+        .get(user_id)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::unauthorized("Chave de criptografia nao inicializada. Faca login novamente.")
+        })
+}
+
+/// Registra a chave que esta saindo, para a decifra por tentativa alcanca-la.
+pub fn set_retiring_key(user_id: &str, retiring: [u8; 32]) -> Result<(), AppError> {
+    let mut ring = load_keyring(user_id)?;
+    ring.retiring = Some(retiring);
+    cache_keyring(user_id, ring)
 }
 
 /// Abre a DEK do usuario com a senha e devolve o objeto, sem cachear.
@@ -206,17 +242,9 @@ pub fn clear_user_crypto(user_id: &str) {
     }
 }
 
+/// A chave com que dado NOVO deve ser cifrado.
 pub fn load_key(user_id: &str) -> Result<[u8; 32], AppError> {
-    user_keys()
-        .lock()
-        .map_err(|_| AppError::internal("Erro ao acessar cache de chaves."))?
-        .get(user_id)
-        .copied()
-        .ok_or_else(|| {
-            AppError::unauthorized(
-                "Chave de criptografia nao inicializada. Faca login novamente.",
-            )
-        })
+    Ok(load_keyring(user_id)?.current)
 }
 
 pub fn encrypt_content_with_key(content: &str, key: &[u8; 32]) -> Result<EncryptedPayload, AppError> {
@@ -273,10 +301,63 @@ pub fn encrypt_content(content: &str, user_id: &str) -> Result<EncryptedPayload,
     encrypt_content_with_key(content, &key)
 }
 
+/// Resultado de uma decifra que pode ter usado a chave antiga.
+pub struct DecryptOutcome {
+    pub plaintext: String,
+    /// `true` quando so a chave que esta saindo abriu — ou seja, este registro
+    /// ainda nao foi convertido.
+    pub used_retiring: bool,
+}
+
+/// Decifra tentando a chave atual e, em seguida, a que esta saindo.
+///
+/// **A autoridade sobre qual chave abre um registro e a propria decifra, nunca
+/// uma coluna de versao.** Duas razoes concretas:
+///
+/// - Uma rotacao interrompida deixa parte das linhas em cada chave, e nada
+///   garante que o marcador tenha sido gravado antes da queda. Confiar nele
+///   transformaria uma interrupcao em dado ilegivel.
+/// - Uma linha marcada como convertida fica obsoleta na rotacao seguinte, e duas
+///   maquinas restaurando o mesmo backup geram DEKs diferentes para o mesmo
+///   usuario. O marcador serve como dica de otimizacao; a verdade e o AES-GCM,
+///   que so autentica com a chave certa.
+pub fn decrypt_content_trying_all(
+    payload: &EncryptedPayload,
+    user_id: &str,
+) -> Result<DecryptOutcome, AppError> {
+    let ring = load_keyring(user_id)?;
+    if let Ok(plaintext) = decrypt_content_with_key(payload, &ring.current) {
+        return Ok(DecryptOutcome { plaintext, used_retiring: false });
+    }
+    if let Some(old) = ring.retiring {
+        let plaintext = decrypt_content_with_key(payload, &old)?;
+        return Ok(DecryptOutcome { plaintext, used_retiring: true });
+    }
+    // Sem chave antiga, o erro da chave atual e o erro real.
+    decrypt_content_with_key(payload, &ring.current)
+        .map(|plaintext| DecryptOutcome { plaintext, used_retiring: false })
+}
+
 /// Decrypt content using the authenticated user's key.
 pub fn decrypt_content(payload: &EncryptedPayload, user_id: &str) -> Result<String, AppError> {
-    let key = load_key(user_id)?;
-    decrypt_content_with_key(payload, &key)
+    Ok(decrypt_content_trying_all(payload, user_id)?.plaintext)
+}
+
+/// Decifra um arquivo tentando a chave atual e depois a que esta saindo.
+///
+/// Anexos sao o unico artefato fora da transacao do SQLite: o arquivo e trocado
+/// por rename e a linha e atualizada em seguida, entao uma queda entre os dois
+/// passos deixa arquivo e marcador discordando. Tentar as duas chaves faz o
+/// desencontro deixar de importar.
+pub fn decrypt_file_trying_all(data: &[u8], user_id: &str) -> Result<Vec<u8>, AppError> {
+    let ring = load_keyring(user_id)?;
+    if let Ok(plain) = decrypt_file(data, &ring.current) {
+        return Ok(plain);
+    }
+    if let Some(old) = ring.retiring {
+        return decrypt_file(data, &old);
+    }
+    decrypt_file(data, &ring.current)
 }
 
 pub fn pepper_fingerprint() -> Result<String, AppError> {
@@ -505,6 +586,90 @@ mod tests {
 
     fn wrong_key() -> [u8; 32] {
         [2u8; 32]
+    }
+
+    // ── Chaveiro e decifra por tentativa ────────────────────────────────────
+
+    /// O cenario que a rotacao precisa sobreviver: metade dos registros sob a
+    /// chave nova, metade ainda sob a antiga. Sem tentar as duas, uma queda de
+    /// energia no meio da conversao deixaria parte do prontuario ilegivel.
+    #[test]
+    fn le_registro_que_ainda_esta_sob_a_chave_antiga() {
+        let uid = "u-rotacao";
+        let antiga = [0x11u8; 32];
+        let nova = [0x22u8; 32];
+
+        // Registro gravado antes da rotacao.
+        let antigo = encrypt_content_with_key("prontuario nao convertido", &antiga).unwrap();
+        // Registro gravado depois.
+        let novo = encrypt_content_with_key("prontuario ja convertido", &nova).unwrap();
+
+        cache_keyring(uid, KeyRing { current: nova, retiring: Some(antiga) }).unwrap();
+
+        let r = decrypt_content_trying_all(&novo, uid).unwrap();
+        assert_eq!(r.plaintext, "prontuario ja convertido");
+        assert!(!r.used_retiring);
+
+        let r = decrypt_content_trying_all(&antigo, uid).unwrap();
+        assert_eq!(r.plaintext, "prontuario nao convertido");
+        assert!(
+            r.used_retiring,
+            "precisa sinalizar que veio da chave antiga, e o que dispara a correcao da linha"
+        );
+
+        clear_user_crypto(uid);
+    }
+
+    /// Sem chave antiga registrada, nada muda: o erro continua sendo o da chave
+    /// atual, e nao um erro generico que esconderia a causa.
+    #[test]
+    fn sem_chave_antiga_o_erro_e_o_da_chave_atual() {
+        let uid = "u-sem-antiga";
+        let alheio = encrypt_content_with_key("dado de outra chave", &[0x33u8; 32]).unwrap();
+        cache_keyring(uid, KeyRing { current: [0x44u8; 32], retiring: None }).unwrap();
+
+        assert!(decrypt_content_trying_all(&alheio, uid).is_err());
+        clear_user_crypto(uid);
+    }
+
+    /// Anexos sao o unico artefato fora da transacao do SQLite: o arquivo e
+    /// trocado por rename e a linha e atualizada depois, entao uma queda entre
+    /// os dois passos deixa arquivo e marcador discordando.
+    #[test]
+    fn anexo_abre_com_qualquer_uma_das_duas_chaves() {
+        let uid = "u-anexo-rotacao";
+        let antiga = [0x55u8; 32];
+        let nova = [0x66u8; 32];
+        let conteudo = b"%PDF-1.4 conteudo ficticio";
+
+        let sob_antiga = encrypt_file(conteudo, &antiga).unwrap();
+        let sob_nova = encrypt_file(conteudo, &nova).unwrap();
+
+        cache_keyring(uid, KeyRing { current: nova, retiring: Some(antiga) }).unwrap();
+
+        assert_eq!(decrypt_file_trying_all(&sob_nova, uid).unwrap(), conteudo);
+        assert_eq!(decrypt_file_trying_all(&sob_antiga, uid).unwrap(), conteudo);
+
+        // E o passthrough de arquivo em texto claro continua valendo — e o
+        // estado de todo anexo vindo de backup.
+        let em_claro = conteudo.to_vec();
+        assert_eq!(decrypt_file_trying_all(&em_claro, uid).unwrap(), conteudo);
+
+        clear_user_crypto(uid);
+    }
+
+    #[test]
+    fn set_retiring_key_preserva_a_chave_atual() {
+        let uid = "u-set-retiring";
+        cache_key(uid, [0x77u8; 32]).unwrap();
+        assert!(load_keyring(uid).unwrap().retiring.is_none());
+
+        set_retiring_key(uid, [0x88u8; 32]).unwrap();
+        let ring = load_keyring(uid).unwrap();
+        assert_eq!(ring.current, [0x77u8; 32], "a chave de escrita nao pode mudar");
+        assert_eq!(ring.retiring, Some([0x88u8; 32]));
+
+        clear_user_crypto(uid);
     }
 
     #[test]

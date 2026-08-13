@@ -252,13 +252,15 @@ pub async fn confirm_upload(
     //
     // "Sem chave" e uma condicao transitoria — a resposta certa e pedir
     // desbloqueio e preservar o arquivo, nunca confundir com "arquivo invalido".
-    let key = crypto::load_key(user_id).map_err(|_| {
+    crypto::load_key(user_id).map_err(|_| {
         AppError::unauthorized(
             "Sessao bloqueada: desbloqueie o aplicativo para concluir o envio. \
              O arquivo foi preservado.",
         )
     })?;
-    let data = crypto::decrypt_file(&raw, &key)
+    // Tentativa dupla: durante uma rotacao de chave o arquivo pode ter sido
+    // gravado sob a chave que esta saindo.
+    let data = crypto::decrypt_file_trying_all(&raw, user_id)
         .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?;
 
     // Verify plaintext size matches declared size
@@ -336,10 +338,10 @@ pub async fn download_file(
     // status 200 e nome de arquivo legitimo: o usuario salvaria um PDF corrompido
     // sem entender por que, e um anexo assim tem tudo para ser confundido com
     // perda de dado.
-    let key = crypto::load_key(user_id).map_err(|_| {
+    crypto::load_key(user_id).map_err(|_| {
         AppError::unauthorized("Sessao bloqueada: desbloqueie o aplicativo para baixar o anexo.")
     })?;
-    let data = crypto::decrypt_file(&raw, &key)
+    let data = crypto::decrypt_file_trying_all(&raw, user_id)
         .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?;
 
     audit::write_audit_log(

@@ -146,7 +146,7 @@ pub async fn export_patient_bundle(
             // or the ZIP contains unreadable AES blobs. `decrypt_file` passes
             // through files written before at-rest encryption was added.
             let data = match crypto::load_key(user_id) {
-                Ok(key) => match crypto::decrypt_file(&raw, &key) {
+                Ok(_) => match crypto::decrypt_file_trying_all(&raw, user_id) {
                     Ok(d) => d,
                     Err(e) => {
                         tracing::warn!(

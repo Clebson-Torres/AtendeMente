@@ -386,7 +386,7 @@ async fn collect_files(
                         .await
                         .map_err(|e| AppError::internal(format!("Erro ao ler anexo: {}", e)))?;
                     let decrypted = match crypto::load_key(user_id) {
-                        Ok(key) => match crypto::decrypt_file(&bytes, &key) {
+                        Ok(_) => match crypto::decrypt_file_trying_all(&bytes, user_id) {
                             Ok(d) => d,
                             Err(e) => {
                                 tracing::warn!("[Backup] Falha ao descriptografar anexo {}: {}", zip_path, e);
