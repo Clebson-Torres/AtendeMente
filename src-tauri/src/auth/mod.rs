@@ -74,9 +74,7 @@ async fn register_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<RegisterInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
-    crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:register", &input.email, 3, 3600_000,
-    )
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::Register, &input.email)
     .await?;
 
     let result = auth_service::register(&state.auth_db, &input.email, &input.password, &input.full_name)
@@ -133,9 +131,7 @@ async fn login_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<LoginInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
-    crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:login", &input.email, 5, 600_000,
-    )
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::Login, &input.email)
     .await?;
 
     let result = match auth_service::login(&state.auth_db, &input.email, &input.password).await {
@@ -151,13 +147,33 @@ async fn login_handler(
             r
         }
         Err(e) => {
-            let user_id = format!("unknown:{}", input.email);
+            // O e-mail digitado so e registrado quando corresponde a uma conta
+            // existente. Nesse caso ele ja esta em `auth_users` e o log nao expoe
+            // nada novo; serve para a pessoa ver tentativas contra a propria conta.
+            //
+            // Quando nao corresponde, pode ser o endereco de um terceiro digitado
+            // por engano — e guardar isso criaria dado pessoal sobre alguem que
+            // nem usa o sistema, sem nenhum ganho de auditoria. O dominio basta
+            // para distinguir varredura de erro de digitacao.
+            let conhecido =
+                auth_service::find_user_id_by_email(&state.auth_db, &input.email).await.is_ok();
+            let dominio = input.email.rsplit('@').next().unwrap_or("").to_string();
+            let detalhe = if conhecido {
+                serde_json::json!({"email": input.email, "conta_existente": true})
+            } else {
+                serde_json::json!({"conta_existente": false, "dominio": dominio})
+            };
+            let user_id = if conhecido {
+                format!("unknown:{}", input.email)
+            } else {
+                "unknown".to_string()
+            };
             record_session_event(
                 &state.auth_db,
                 &user_id,
                 AuditAction::LoginFailed,
                 None,
-                serde_json::json!({"email": input.email}),
+                detalhe,
             )
             .await;
             return Err(AppError::unauthorized(e));
@@ -325,13 +341,7 @@ async fn rotate_recovery_code_handler(
         .await
         .map_err(AppError::unauthorized)?;
 
-    crate::rate_limit::enforce_rate_limit(
-        &state.auth_db,
-        "auth:recovery-rotate",
-        &user_id,
-        5,
-        900_000,
-    )
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::RecoveryRotate, &user_id)
     .await?;
 
     if !auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)
@@ -420,7 +430,7 @@ async fn rotate_data_key_handler(
         .map_err(AppError::unauthorized)?;
 
     // Cada tentativa gera um backup completo e pode re-cifrar todo o acervo.
-    crate::rate_limit::enforce_rate_limit(&state.auth_db, "auth:rotate-key", &user_id, 3, 3_600_000)
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::RotateKey, &user_id)
         .await?;
 
     if !auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)
@@ -527,9 +537,7 @@ async fn recover_handler(
         _ => return Err(AppError::bad_request("Informe user_id ou email.")),
     };
 
-    crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:password-reset", &user_id, 3, 900_000,
-    )
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::PasswordReset, &user_id)
     .await?;
 
     let result = auth_service::recover_with_secret(
@@ -554,13 +562,7 @@ async fn reset_password_handler(
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     // O `/auth/recover` e limitado a 3/15min, mas este passo nao tinha limite:
     // o reset_token e um UUID de 5 minutos e, sem limite, era atacavel por forca bruta.
-    crate::rate_limit::enforce_rate_limit(
-        &state.auth_db,
-        "auth:password-reset",
-        &input.reset_token,
-        5,
-        900_000,
-    )
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::PasswordReset, &input.reset_token)
     .await?;
 
     let result =
@@ -628,7 +630,7 @@ async fn unlock_handler(
     // e o unlock e justamente o que devolve a chave de dados. O login sempre
     // teve 5/10min; nao faz sentido a porta de tras ser mais franca que a porta
     // da frente.
-    crate::rate_limit::enforce_rate_limit(&state.auth_db, "auth:unlock", &user_id, 5, 600_000)
+    crate::rate_limit::enforce(&state.auth_db, crate::rate_limit::Scope::Unlock, &user_id)
         .await?;
 
     let password_valid = auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)

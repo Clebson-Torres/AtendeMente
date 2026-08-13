@@ -257,7 +257,7 @@ async fn restore_backup_handler(
     // Restaurar substitui banco e anexos. Sem limite, uma sequencia de chamadas
     // (por erro de retry na UI ou por abuso) reprocessa o bundle inteiro a cada
     // vez, cada uma passando por Argon2id e trocando o diretorio de anexos.
-    crate::rate_limit::enforce_rate_limit(&db, "backup:restore", &user.id, 5, 3_600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::BackupRestore, &user.id).await?;
     let data = base64_decode(&input.backup_base64)?;
     let manifest = if let Some(pass) = &input.password {
         features::backup::restore_backup_with_password(&db, &state.config, &user.id, &data, Some(pass)).await?
@@ -546,7 +546,7 @@ async fn create_upload_session(
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    crate::rate_limit::enforce_rate_limit(&db, "upload", &user.id, 20, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Upload, &user.id).await?;
     let (file_id, storage_path) = features::files::create_upload_session(&db, &state.config, &user.id, &input).await?;
     Ok(Json(ActionResponse::success("", serde_json::json!({
         "file_id": file_id,
@@ -627,7 +627,7 @@ async fn export_patient(
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Export, &user.id).await?;
     let bundle = features::exports::export_patient_bundle(&db, &user.id, &id).await?;
     Ok((
         axum::http::StatusCode::OK,
@@ -645,7 +645,7 @@ async fn export_patients_csv(
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Export, &user.id).await?;
     let csv = features::exports::export_patients_csv(&db, &user.id).await?;
     Ok((
         axum::http::StatusCode::OK,
@@ -664,7 +664,7 @@ async fn export_appointments_csv(
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Export, &user.id).await?;
     let csv = features::appointments::export_appointments_csv(&db, &user.id, query.month, query.year).await?;
     Ok((
         axum::http::StatusCode::OK,
@@ -683,7 +683,7 @@ async fn export_payments_csv(
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
-    crate::rate_limit::enforce_rate_limit(&db, "export", &user.id, 10, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Export, &user.id).await?;
     let csv = features::payments::export_payments_csv(&db, &user.id, query.month, query.year).await?;
     Ok((
         axum::http::StatusCode::OK,
@@ -716,7 +716,7 @@ async fn import_preview(
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
 
-    crate::rate_limit::enforce_rate_limit(&db, "import", &user.id, 5, 3600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Import, &user.id).await?;
 
     let data = base64_decode(&payload.content_base64)?;
     let preview = crate::features::patients_import::parse_csv_bytes(&data)?;
@@ -743,7 +743,7 @@ async fn import_commit(
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
     // O preview era limitado a 5/h, o commit nao — e e o commit que escreve.
-    crate::rate_limit::enforce_rate_limit(&db, "import", &user.id, 5, 3_600_000).await?;
+    crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Import, &user.id).await?;
 
     let imported = crate::features::patients_import::commit_import(
         &db, &user.id, &payload.rows,

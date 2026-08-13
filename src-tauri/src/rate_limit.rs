@@ -9,38 +9,77 @@ pub struct RateLimitConfig {
     pub window_ms: i64,
 }
 
-pub const RATE_LIMITS: &[RateLimitConfig] = &[
-    RateLimitConfig {
-        scope: "auth:login",
-        limit: 5,
-        window_ms: 10 * 60 * 1000,
-    },
-    RateLimitConfig {
-        scope: "auth:password-reset",
-        limit: 3,
-        window_ms: 15 * 60 * 1000,
-    },
-    RateLimitConfig {
-        scope: "auth:invite",
-        limit: 3,
-        window_ms: 30 * 60 * 1000,
-    },
-    RateLimitConfig {
-        scope: "upload",
-        limit: 20,
-        window_ms: 60 * 60 * 1000,
-    },
-    RateLimitConfig {
-        scope: "import",
-        limit: 5,
-        window_ms: 60 * 60 * 1000,
-    },
-    RateLimitConfig {
-        scope: "export",
-        limit: 10,
-        window_ms: 60 * 60 * 1000,
-    },
-];
+/// Os escopos com limite, como enum e nao como string.
+///
+/// Antes havia uma constante `RATE_LIMITS` que **ninguem lia**: cada chamada
+/// repetia escopo, limite e janela como literais. Duas consequencias reais:
+///
+/// - Os numeros divergiam da tabela sem que nada acusasse, e escopos novos que
+///   eu mesmo adicionei (`auth:register`, `auth:unlock`, ...) nunca entraram nela.
+/// - **Um erro de digitacao no escopo cria um contador separado em silencio** —
+///   o limite simplesmente deixa de valer, e nada falha para avisar.
+///
+/// Com enum, o compilador garante que o escopo existe e os numeros vivem num
+/// unico lugar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Login,
+    Register,
+    PasswordReset,
+    /// Desbloqueio de tela: mesmo peso do login, porque e o que devolve a chave
+    /// de dados.
+    Unlock,
+    RecoveryRotate,
+    /// Rotacao da chave de dados: cada tentativa gera um backup completo e pode
+    /// re-cifrar todo o acervo.
+    RotateKey,
+    Upload,
+    Import,
+    Export,
+    /// Restaurar substitui banco e anexos.
+    BackupRestore,
+}
+
+impl Scope {
+    pub fn key(&self) -> &'static str {
+        match self {
+            Scope::Login => "auth:login",
+            Scope::Register => "auth:register",
+            Scope::PasswordReset => "auth:password-reset",
+            Scope::Unlock => "auth:unlock",
+            Scope::RecoveryRotate => "auth:recovery-rotate",
+            Scope::RotateKey => "auth:rotate-key",
+            Scope::Upload => "upload",
+            Scope::Import => "import",
+            Scope::Export => "export",
+            Scope::BackupRestore => "backup:restore",
+        }
+    }
+
+    /// `(limite, janela em ms)`
+    pub fn budget(&self) -> (i64, i64) {
+        const MIN: i64 = 60 * 1000;
+        match self {
+            Scope::Login => (5, 10 * MIN),
+            Scope::Register => (3, 60 * MIN),
+            Scope::PasswordReset => (5, 15 * MIN),
+            Scope::Unlock => (5, 10 * MIN),
+            Scope::RecoveryRotate => (5, 15 * MIN),
+            Scope::RotateKey => (3, 60 * MIN),
+            Scope::Upload => (20, 60 * MIN),
+            Scope::Import => (5, 60 * MIN),
+            Scope::Export => (10, 60 * MIN),
+            Scope::BackupRestore => (5, 60 * MIN),
+        }
+    }
+}
+
+/// Aplica o limite do escopo. Prefira esta forma a `enforce_rate_limit`, que
+/// recebe os numeros soltos e permite que eles divirjam da tabela.
+pub async fn enforce(db: &SqlitePool, scope: Scope, identifier: &str) -> Result<(), AppError> {
+    let (limit, window_ms) = scope.budget();
+    enforce_rate_limit(db, scope.key(), identifier, limit, window_ms).await
+}
 
 pub async fn enforce_rate_limit(
     db: &SqlitePool,
@@ -51,6 +90,21 @@ pub async fn enforce_rate_limit(
 ) -> Result<(), AppError> {
     let now = chrono::Utc::now();
     let now_iso = now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+    // Limpeza oportunista: `request_limits` nunca era podada, e cada
+    // (escopo, identificador) deixava uma linha para sempre. Como o identificador
+    // do login e o e-mail digitado, uma varredura de credenciais fazia a tabela
+    // crescer sem limite — e cada e-mail tentado ficava registrado ali.
+    //
+    // Uma janela encerrada ha mais de 24h nao influencia nenhuma decisao, entao
+    // pode sair. E um DELETE indexado por chamada, irrelevante nesta escala.
+    let corte = (now - chrono::Duration::hours(24))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let _ = sqlx::query("DELETE FROM request_limits WHERE window_starts_at < ?")
+        .bind(&corte)
+        .execute(db)
+        .await;
 
     let mut tx = db.begin()
         .await
@@ -128,7 +182,7 @@ pub async fn enforce_rate_limit(
 
 #[cfg(test)]
 mod tests {
-    use super::enforce_rate_limit;
+    use super::{enforce, enforce_rate_limit, Scope};
     use crate::db;
     use crate::errors::AppError;
     use sqlx::SqlitePool;
@@ -154,6 +208,95 @@ mod tests {
             .execute(db)
             .await
             .unwrap();
+    }
+
+    /// Cada escopo tem chave e orcamento proprios, e nenhum repete a chave de
+    /// outro — duas variantes com a mesma string compartilhariam o contador em
+    /// silencio, e o limite de uma valeria pela outra.
+    #[test]
+    fn cada_escopo_tem_chave_unica_e_orcamento_valido() {
+        let todos = [
+            Scope::Login, Scope::Register, Scope::PasswordReset, Scope::Unlock,
+            Scope::RecoveryRotate, Scope::RotateKey, Scope::Upload, Scope::Import,
+            Scope::Export, Scope::BackupRestore,
+        ];
+        let mut chaves: Vec<&str> = todos.iter().map(|s| s.key()).collect();
+        let antes = chaves.len();
+        chaves.sort_unstable();
+        chaves.dedup();
+        assert_eq!(chaves.len(), antes, "ha escopos com a mesma chave");
+
+        for s in todos {
+            let (limite, janela) = s.budget();
+            assert!(limite > 0, "{:?} sem limite", s);
+            assert!(janela > 0, "{:?} sem janela", s);
+        }
+    }
+
+    /// O desbloqueio de tela precisa ser tao restrito quanto o login: e ele que
+    /// devolve a chave de dados, e a protecao no cliente zera a cada refresh.
+    #[test]
+    fn unlock_e_tao_restrito_quanto_o_login() {
+        assert_eq!(Scope::Unlock.budget(), Scope::Login.budget());
+    }
+
+    #[tokio::test]
+    async fn enforce_por_escopo_aplica_o_orcamento_da_tabela() {
+        let (_d, db) = app_db().await;
+        let (limite, _) = Scope::Login.budget();
+
+        for i in 1..=limite {
+            enforce(&db, Scope::Login, "x@y.com")
+                .await
+                .unwrap_or_else(|e| panic!("tentativa {i} deveria passar: {e}"));
+        }
+        assert!(
+            enforce(&db, Scope::Login, "x@y.com").await.is_err(),
+            "passar do limite da tabela tem de bloquear"
+        );
+        // Escopo diferente nao compartilha contador.
+        assert!(enforce(&db, Scope::Unlock, "x@y.com").await.is_ok());
+    }
+
+    /// `request_limits` nunca era podada. Como o identificador do login e o
+    /// e-mail digitado, uma varredura de credenciais fazia a tabela crescer sem
+    /// limite — e deixava cada e-mail tentado registrado.
+    #[tokio::test]
+    async fn janelas_antigas_sao_removidas() {
+        let (_d, db) = app_db().await;
+        enforce(&db, Scope::Login, "atual@x.com").await.unwrap();
+
+        // Uma linha com janela de 48h atras, como sobra de uma varredura antiga.
+        sqlx::query(
+            "INSERT INTO request_limits (id, scope, identifier, hits, window_starts_at) \
+             VALUES ('velha', 'auth:login', 'antigo@x.com', 99, ?)",
+        )
+        .bind(
+            (chrono::Utc::now() - chrono::Duration::hours(48))
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        enforce(&db, Scope::Login, "outro@x.com").await.unwrap();
+
+        let sobrou: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM request_limits WHERE id = 'velha'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(sobrou, 0, "a janela de 48h atras deveria ter sido removida");
+
+        // E a janela em uso continua lá.
+        let atual: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM request_limits WHERE identifier = 'atual@x.com'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(atual, 1, "a janela recente nao pode ser removida");
     }
 
     #[tokio::test]

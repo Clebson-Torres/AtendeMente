@@ -300,9 +300,14 @@ pub async fn confirm_upload(
         "file_upload",
         "record_file",
         Some(file_id),
+        // Sem `original_name`: um nome escolhido pelo usuario descreve o
+        // paciente e muitas vezes o diagnostico ("laudo-maria-silva-cid-f41.pdf"),
+        // e ficava em texto claro no MESMO banco onde o prontuario e cifrado.
+        // A extensao e o tamanho respondem o que a auditoria precisa saber.
         Some(&serde_json::json!({
             "kind": file.kind,
-            "original_name": file.original_name,
+            "ext": file_extension(&file.original_name),
+            "byte_size": file.byte_size,
             "appointment_id": file.appointment_id,
             "patient_id": file.patient_id,
         })),
@@ -352,7 +357,7 @@ pub async fn download_file(
         Some(file_id),
         Some(&serde_json::json!({
             "kind": file.kind,
-            "original_name": file.original_name,
+            "ext": file_extension(&file.original_name),
         })),
         None,
         None,
@@ -414,7 +419,7 @@ pub async fn delete_file(
         "record_file",
         Some(file_id),
         Some(&serde_json::json!({
-            "original_name": file.original_name,
+            "ext": file_extension(&file.original_name),
         })),
         None,
         None,
