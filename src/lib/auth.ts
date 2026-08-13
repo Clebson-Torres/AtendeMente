@@ -15,6 +15,16 @@ export interface AuthUserInfo {
    * uma edição a partir dali gravaria o vazio. Só `/auth/me` informa isso.
    */
   locked?: boolean;
+  /**
+   * A conta não tem segunda via da chave de dados.
+   *
+   * Quem vem de versão anterior tem um código de recuperação válido mas nenhum
+   * envelope, porque um envelope só nasce do segredo em claro e num login comum
+   * o servidor só tem o hash. Enquanto for assim, essa conta depende só da
+   * senha — e esquecê-la, depois da rotação de chave, deixa o prontuário
+   * inacessível para sempre.
+   */
+  recovery_wrap_missing?: boolean;
 }
 
 type AuthUser = AuthUserInfo | null;
@@ -139,12 +149,14 @@ export async function completeFromStoredToken(): Promise<void> {
       email: string;
       onboarding_completed: boolean;
       locked?: boolean;
+      recovery_wrap_missing?: boolean;
     }>("/auth/me");
     notify({
       uid: data.user_id,
       email: data.email,
       onboarding_completed: data.onboarding_completed,
       locked: data.locked === true,
+      recovery_wrap_missing: data.recovery_wrap_missing === true,
     });
   } catch {
     clearToken();
@@ -249,6 +261,28 @@ export async function resetPassword(
     "/auth/reset-password",
     { reset_token: resetToken, new_password: newPassword }
   );
+}
+
+/**
+ * Emite um novo código de recuperação e cria a segunda via da chave de dados.
+ *
+ * Exige a senha, e não apenas a sessão: é ela que abre a chave para poder
+ * embrulhá-la de novo. **O código anterior deixa de valer no mesmo instante** —
+ * por isso a tela que chama isto precisa exigir que o novo seja anotado antes
+ * de prosseguir.
+ */
+export async function rotateRecoveryCode(
+  password: string
+): Promise<{ user_id: string; recovery_secret: string }> {
+  return apiRequest<{ user_id: string; recovery_secret: string }>(
+    "/auth/recovery-code/rotate",
+    { password }
+  );
+}
+
+/** Confirma que o código atual foi guardado, descartando o anterior. */
+export async function ackRecoveryCode(): Promise<void> {
+  await apiRequest<void>("/auth/recovery-code/ack");
 }
 
 // ─── Session restore ─────────────────────────────────────────────────────

@@ -83,7 +83,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <SecurityStatusCard onboardingCompleted={user?.onboarding_completed ?? false} />
+      <SecurityStatusCard
+        onboardingCompleted={user?.onboarding_completed ?? false}
+        recoveryWrapMissing={user?.recovery_wrap_missing ?? false}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="app-surface p-5">

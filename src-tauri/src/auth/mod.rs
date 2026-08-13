@@ -249,6 +249,29 @@ async fn me_handler(
     // ausente como se fosse dado real.
     let locked = crate::crypto::load_key(&user_id).is_err();
 
+    // Falta o wrap de recuperacao?
+    //
+    // Quem vem de versao anterior tem codigo de recuperacao valido mas nenhum
+    // wrap, porque um wrap so nasce do segredo em claro e num login comum o
+    // banco so tem o hash. Enquanto for assim, essa conta nao tem segunda via
+    // da chave: se a senha for esquecida depois da rotacao, o prontuario fica
+    // inacessivel. A UI usa isto para pedir a emissao de um codigo novo.
+    let recovery_wrap_missing = match crate::crypto::envelope::load_deks(&state.auth_db, &user_id)
+        .await
+    {
+        Ok(deks) => deks
+            .iter()
+            .find(|d| d.role == crate::crypto::envelope::DekRole::Current)
+            .map(|d| {
+                !d.wraps
+                    .iter()
+                    .any(|w| w.slot == crate::crypto::envelope::Slot::Recovery)
+            })
+            // Sem envelope ainda (primeiro acesso): nao ha o que cobrar.
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+
     Ok(Json(ActionResponse::success(
         "",
         serde_json::json!({
@@ -257,6 +280,7 @@ async fn me_handler(
             "full_name": full_name,
             "onboarding_completed": onboarding_completed,
             "locked": locked,
+            "recovery_wrap_missing": recovery_wrap_missing,
         }),
     )))
 }

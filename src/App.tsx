@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext, Suspense, lazy } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { onAuthChange, restoreSession, lock } from "./lib/auth";
+import { onAuthChange, restoreSession, lock, type AuthUserInfo } from "./lib/auth";
 import Layout from "./components/Layout";
 import ToastContainer from "./components/ui/Toast";
 import LockScreen from "./components/LockScreen";
@@ -18,11 +18,16 @@ const Payments = lazy(() => import("./pages/Payments"));
 const Settings = lazy(() => import("./pages/Settings"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
-export interface AuthUser {
-  uid: string;
-  email: string | null;
-  onboarding_completed: boolean;
-}
+/**
+ * Alias do tipo que a camada de auth realmente emite.
+ *
+ * Isto era uma segunda declaração, com os mesmos três campos. A duplicata só se
+ * mantinha idêntica por acidente: cada campo novo em `AuthUserInfo` — `locked`,
+ * `recovery_wrap_missing` — chegava ao contexto em runtime mas sumia do tipo, e
+ * qualquer tela que tentasse lê-lo quebrava a compilação sem que a origem
+ * ficasse óbvia.
+ */
+export type AuthUser = AuthUserInfo;
 
 interface AuthCtx {
   user: AuthUser | null;
