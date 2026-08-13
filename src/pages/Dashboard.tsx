@@ -86,6 +86,7 @@ export default function Dashboard() {
       <SecurityStatusCard
         onboardingCompleted={user?.onboarding_completed ?? false}
         recoveryWrapMissing={user?.recovery_wrap_missing ?? false}
+        keyRotationPending={user?.key_rotation_pending ?? false}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -4,6 +4,7 @@ import { api, type BackupConfigData } from "../../lib/api";
 import { format } from "date-fns";
 import Modal from "../ui/Modal";
 import RecoveryCodeSetup from "./RecoveryCodeSetup";
+import DataKeyRotation from "./DataKeyRotation";
 
 interface Props {
   onboardingCompleted: boolean;
@@ -16,15 +17,26 @@ interface Props {
    * proteção que não tem.
    */
   recoveryWrapMissing?: boolean;
+  /**
+   * A chave dos prontuários ainda depende apenas desta máquina.
+   *
+   * É a pendência de segurança mais relevante do app: enquanto for verdade, quem
+   * tiver acesso a esta conta do sistema operacional lê tudo sem saber a senha.
+   */
+  keyRotationPending?: boolean;
 }
 
 export default function SecurityStatusCard({
   onboardingCompleted,
   recoveryWrapMissing = false,
+  keyRotationPending = false,
 }: Props) {
   const [config, setConfig] = useState<BackupConfigData | null>(null);
   const [setupAberto, setSetupAberto] = useState(false);
+  const [rotacaoAberta, setRotacaoAberta] = useState(false);
   const [resolvido, setResolvido] = useState(false);
+  const [rotacionado, setRotacionado] = useState(false);
+  const faltaRotacao = keyRotationPending && !rotacionado;
   const faltaCodigo = (recoveryWrapMissing && !resolvido) || !onboardingCompleted;
 
   useEffect(() => {
@@ -69,11 +81,20 @@ export default function SecurityStatusCard({
       color: config?.last_backup_at ? "text-success" : "text-muted-foreground",
       bgClass: config?.last_backup_at ? "bg-success/10" : "bg-muted",
     },
+    {
+      icon: faltaRotacao ? AlertCircle : ShieldCheck,
+      label: "Chave dos prontuários",
+      status: faltaRotacao ? ("warning" as const) : ("ok" as const),
+      detail: faltaRotacao ? undefined : "Ligada à senha",
+      color: faltaRotacao ? "text-yellow-700" : "text-success",
+      bgClass: faltaRotacao ? "bg-yellow-50" : "bg-success/10",
+      action: faltaRotacao ? () => setRotacaoAberta(true) : undefined,
+    },
   ];
 
   return (
     <>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {items.map((item) => {
           const conteudo = (
             <>
@@ -82,7 +103,7 @@ export default function SecurityStatusCard({
                 <span className="text-xs font-medium text-muted-foreground">{item.label}</span>
               </div>
               <p className={`text-sm font-semibold ${item.color}`}>
-                {item.status === "ok" && "Ativo"}
+                {item.status === "ok" && (item.detail || "Ativo")}
                 {item.status === "warning" && "Configurar"}
                 {item.status === "info" && (item.detail || "—")}
                 {item.status === "muted" && (item.detail || "—")}
@@ -110,6 +131,21 @@ export default function SecurityStatusCard({
           );
         })}
       </div>
+
+      <Modal
+        open={rotacaoAberta}
+        onClose={() => setRotacaoAberta(false)}
+        title="Proteger a chave dos prontuários"
+        size="md"
+      >
+        <DataKeyRotation
+          onDone={() => {
+            setRotacionado(true);
+            setRotacaoAberta(false);
+          }}
+          onCancel={() => setRotacaoAberta(false)}
+        />
+      </Modal>
 
       <Modal
         open={setupAberto}

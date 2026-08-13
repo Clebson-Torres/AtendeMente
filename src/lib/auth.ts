@@ -25,6 +25,14 @@ export interface AuthUserInfo {
    * inacessível para sempre.
    */
   recovery_wrap_missing?: boolean;
+  /**
+   * A chave de dados ainda é a derivada do pepper da máquina, ou há uma rotação
+   * pela metade.
+   *
+   * Enquanto for assim, quem tem a conta do sistema operacional abre os
+   * prontuários sem saber a senha — foi isso que a reforma existe para fechar.
+   */
+  key_rotation_pending?: boolean;
 }
 
 type AuthUser = AuthUserInfo | null;
@@ -150,6 +158,7 @@ export async function completeFromStoredToken(): Promise<void> {
       onboarding_completed: boolean;
       locked?: boolean;
       recovery_wrap_missing?: boolean;
+      key_rotation_pending?: boolean;
     }>("/auth/me");
     notify({
       uid: data.user_id,
@@ -157,6 +166,7 @@ export async function completeFromStoredToken(): Promise<void> {
       onboarding_completed: data.onboarding_completed,
       locked: data.locked === true,
       recovery_wrap_missing: data.recovery_wrap_missing === true,
+      key_rotation_pending: data.key_rotation_pending === true,
     });
   } catch {
     clearToken();
@@ -278,6 +288,36 @@ export async function rotateRecoveryCode(
     "/auth/recovery-code/rotate",
     { password }
   );
+}
+
+/** Resultado da rotação da chave de dados. */
+export interface RotationResult {
+  patients: number;
+  session_records: number;
+  files: number;
+  resumed: boolean;
+  safety_backup: string | null;
+}
+
+/**
+ * Troca a chave dos dados por uma aleatória e re-cifra o acervo.
+ *
+ * É a operação que faz a senha passar a ser indispensável. Exige os dois
+ * segredos porque a chave nova precisa nascer com os dois envelopes, e um
+ * envelope só pode ser criado a partir do segredo em claro — um único envelope
+ * significaria que esquecer aquele segredo apaga o prontuário.
+ *
+ * Gera um backup de segurança verificado antes de tocar em qualquer registro, e
+ * é retomável: se for interrompida, chamar de novo continua de onde parou.
+ */
+export async function rotateDataKey(
+  password: string,
+  recoveryCode: string
+): Promise<RotationResult> {
+  return apiRequest<RotationResult>("/auth/rotate-key", {
+    password,
+    recovery_code: recoveryCode,
+  });
 }
 
 /** Confirma que o código atual foi guardado, descartando o anterior. */

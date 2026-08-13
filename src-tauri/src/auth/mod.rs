@@ -29,7 +29,14 @@ pub fn create_auth_router(state: Arc<AppState>) -> Router {
         .route("/auth/onboarding", patch(onboarding_handler))
         .route("/auth/recovery-code/rotate", post(rotate_recovery_code_handler))
         .route("/auth/recovery-code/ack", post(ack_recovery_code_handler))
+        .route("/auth/rotate-key", post(rotate_data_key_handler))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+struct RotateKeyInput {
+    password: String,
+    recovery_code: String,
 }
 
 #[derive(Deserialize)]
@@ -256,21 +263,23 @@ async fn me_handler(
     // banco so tem o hash. Enquanto for assim, essa conta nao tem segunda via
     // da chave: se a senha for esquecida depois da rotacao, o prontuario fica
     // inacessivel. A UI usa isto para pedir a emissao de um codigo novo.
-    let recovery_wrap_missing = match crate::crypto::envelope::load_deks(&state.auth_db, &user_id)
+    use crate::crypto::envelope::{DekRole, DekSource, Slot};
+    let deks = crate::crypto::envelope::load_deks(&state.auth_db, &user_id)
         .await
-    {
-        Ok(deks) => deks
-            .iter()
-            .find(|d| d.role == crate::crypto::envelope::DekRole::Current)
-            .map(|d| {
-                !d.wraps
-                    .iter()
-                    .any(|w| w.slot == crate::crypto::envelope::Slot::Recovery)
-            })
-            // Sem envelope ainda (primeiro acesso): nao ha o que cobrar.
-            .unwrap_or(false),
-        Err(_) => false,
-    };
+        .unwrap_or_default();
+    let atual = deks.iter().find(|d| d.role == DekRole::Current);
+
+    let recovery_wrap_missing = atual
+        .map(|d| !d.wraps.iter().any(|w| w.slot == Slot::Recovery))
+        // Sem envelope ainda (primeiro acesso): nao ha o que cobrar.
+        .unwrap_or(false);
+
+    // A chave ainda e a derivada do pepper, ou ha rotacao pela metade?
+    //
+    // Enquanto for assim, quem tem a conta do sistema operacional abre os
+    // prontuarios sem saber a senha. A UI usa isto para oferecer a rotacao.
+    let key_rotation_pending = atual.map(|d| d.source == DekSource::LegacyPepperV1).unwrap_or(false)
+        || deks.iter().any(|d| d.role == DekRole::Retiring);
 
     Ok(Json(ActionResponse::success(
         "",
@@ -281,6 +290,7 @@ async fn me_handler(
             "onboarding_completed": onboarding_completed,
             "locked": locked,
             "recovery_wrap_missing": recovery_wrap_missing,
+            "key_rotation_pending": key_rotation_pending,
         }),
     )))
 }
@@ -378,6 +388,79 @@ async fn rotate_recovery_code_handler(
     Ok(Json(ActionResponse::success(
         "Novo código de recuperação gerado. Guarde-o: o anterior deixou de valer.",
         serde_json::json!({ "user_id": user_id, "recovery_secret": novo_codigo }),
+    )))
+}
+
+/// Troca a chave de dados por uma aleatoria e re-cifra o acervo.
+///
+/// E a operacao que faz a senha passar a ser indispensavel: a chave deixa de ser
+/// derivavel do pepper do cofre e passa a existir apenas dentro dos envelopes.
+///
+/// Exige os DOIS segredos porque a chave nova precisa nascer com os dois
+/// envelopes, e um envelope so pode ser criado a partir do segredo em claro. Um
+/// unico envelope significaria que esquecer aquele segredo apaga o prontuario.
+///
+/// Roda de forma sincrona. Para o alvo do app — um consultorio individual, com
+/// centenas de registros — a conversao leva a ordem de milissegundos por
+/// registro; se algum dia houver base grande o suficiente para incomodar, o
+/// caminho e reportar progresso, nao paralelizar: a rotacao e retomavel, mas
+/// duas rotacoes concorrentes brigariam pelo mesmo chaveiro.
+async fn rotate_data_key_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<RotateKeyInput>,
+) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    let token = extract_bearer_token(&headers)?;
+    let (user_id, _e, _f) = auth_service::validate_session(&state.auth_db, &token)
+        .await
+        .map_err(AppError::unauthorized)?;
+
+    // Cada tentativa gera um backup completo e pode re-cifrar todo o acervo.
+    crate::rate_limit::enforce_rate_limit(&state.auth_db, "auth:rotate-key", &user_id, 3, 3_600_000)
+        .await?;
+
+    if !auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)
+        .await
+        .map_err(AppError::internal)?
+    {
+        return Err(AppError::unauthorized("Senha incorreta."));
+    }
+
+    let user_db = state.get_or_open_user_db(&user_id).await?;
+    let relatorio = crate::crypto::rotation::rotate_to_random_dek(
+        &user_db,
+        &state.auth_db,
+        &state.config,
+        &user_id,
+        &input.password,
+        &input.recovery_code,
+    )
+    .await?;
+
+    record_session_event(
+        &state.auth_db,
+        &user_id,
+        AuditAction::PasswordReset,
+        Some(&user_id),
+        serde_json::json!({
+            "action": "data_key_rotated",
+            "patients": relatorio.patients,
+            "session_records": relatorio.session_records,
+            "files": relatorio.files,
+            "resumed": relatorio.resumed,
+        }),
+    )
+    .await;
+
+    Ok(Json(ActionResponse::success(
+        "Chave protegida pela sua senha.",
+        serde_json::json!({
+            "patients": relatorio.patients,
+            "session_records": relatorio.session_records,
+            "files": relatorio.files,
+            "resumed": relatorio.resumed,
+            "safety_backup": relatorio.safety_backup,
+        }),
     )))
 }
 
