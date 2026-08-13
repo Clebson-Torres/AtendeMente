@@ -430,8 +430,8 @@ pub async fn recover_with_secret(
     user_id: &str,
     recovery_secret: &str,
 ) -> Result<RecoveryResult, String> {
-    let row = sqlx::query_as::<_, (Option<String>,)>(
-        "SELECT recovery_secret_hash FROM auth_users WHERE id = ?",
+    let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT recovery_secret_hash, recovery_secret_hash_prev FROM auth_users WHERE id = ?",
     )
     .bind(user_id)
     .fetch_optional(db)
@@ -439,16 +439,30 @@ pub async fn recover_with_secret(
     .map_err(|e| format!("Erro ao buscar usuario: {}", e))?
     .ok_or_else(|| "Usuário não encontrado.".to_string())?;
 
-    let stored_hash = row.0.ok_or_else(|| {
-        "Este código de recuperação já foi utilizado. Cada código só pode ser usado uma vez.".to_string()
-    })?;
+    let (stored_hash, prev_hash) = (row.0, row.1);
+    if stored_hash.is_none() && prev_hash.is_none() {
+        return Err(
+            "Este código de recuperação já foi utilizado. Cada código só pode ser usado uma vez."
+                .to_string(),
+        );
+    }
 
     // Precisa passar por `verify_recovery_secret`, e nao por comparacao de
     // hashes: com Argon2 o sal e aleatorio, entao hashear o mesmo codigo duas
     // vezes produz strings diferentes e a igualdade nunca casaria. A funcao
     // ramifica pelo prefixo e aceita tambem os hashes SHA-256 antigos, para o
     // codigo que o usuario ja tem anotado continuar valendo.
-    if !verify_recovery_secret(recovery_secret, &stored_hash) {
+    //
+    // O codigo ANTERIOR tambem e aceito, enquanto o usuario nao confirmar que
+    // anotou o novo. Sem isso, emitir um codigo novo e a pessoa fechar a tela sem
+    // anotar viraria perda definitiva do prontuario no dia em que ela esquecesse
+    // a senha — e nao ha caminho de suporte para isso.
+    let confere = |h: &Option<String>| {
+        h.as_deref()
+            .map(|h| verify_recovery_secret(recovery_secret, h))
+            .unwrap_or(false)
+    };
+    if !confere(&stored_hash) && !confere(&prev_hash) {
         return Err("Chave de recuperação inválida.".into());
     }
 

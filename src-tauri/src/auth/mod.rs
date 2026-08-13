@@ -27,6 +27,8 @@ pub fn create_auth_router(state: Arc<AppState>) -> Router {
         .route("/auth/lock", post(lock_handler))
         .route("/auth/unlock", post(unlock_handler))
         .route("/auth/onboarding", patch(onboarding_handler))
+        .route("/auth/recovery-code/rotate", post(rotate_recovery_code_handler))
+        .route("/auth/recovery-code/ack", post(ack_recovery_code_handler))
         .with_state(state)
 }
 
@@ -256,6 +258,124 @@ async fn me_handler(
             "onboarding_completed": onboarding_completed,
             "locked": locked,
         }),
+    )))
+}
+
+/// Emite um codigo de recuperacao novo e cria o wrap correspondente.
+///
+/// Este endpoint existe por um motivo concreto: quem vem de versao anterior tem
+/// um codigo de recuperacao valido, mas **nenhum wrap** — porque um wrap so pode
+/// ser criado a partir do segredo em claro, e num login comum o banco so tem o
+/// hash. Sem wrap de recuperacao, rotacionar a chave de dados transformaria
+/// "esqueci a senha" em perda definitiva do prontuario.
+///
+/// Exige a senha, e nao apenas a sessao: e a senha que abre a DEK para poder
+/// embrulha-la de novo. O codigo anterior e invalidado por completo — hash e
+/// wrap. Manter o hash antigo valido sem o wrap correspondente criaria uma
+/// armadilha: o codigo autenticaria e ainda assim nao abriria os dados.
+///
+/// Isso e aceitavel aqui porque a pessoa acabou de digitar a senha, ou seja
+/// ainda a tem. No fluxo de reset, onde ela nao tem a senha, o codigo anterior e
+/// preservado.
+async fn rotate_recovery_code_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<UnlockInput>,
+) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    let token = extract_bearer_token(&headers)?;
+    let (user_id, _email, _full_name) = auth_service::validate_session(&state.auth_db, &token)
+        .await
+        .map_err(AppError::unauthorized)?;
+
+    crate::rate_limit::enforce_rate_limit(
+        &state.auth_db,
+        "auth:recovery-rotate",
+        &user_id,
+        5,
+        900_000,
+    )
+    .await?;
+
+    if !auth_service::verify_user_password(&state.auth_db, &user_id, &input.password)
+        .await
+        .map_err(AppError::internal)?
+    {
+        return Err(AppError::unauthorized("Senha incorreta."));
+    }
+
+    // A senha e o que abre a DEK. Sem ela nao ha o que embrulhar.
+    let dek = crate::crypto::unwrap_dek_for_user(&state.auth_db, &user_id, &input.password).await?;
+
+    let novo_codigo = auth_service::generate_recovery_secret();
+    let novo_hash = auth_service::hash_recovery_secret(&novo_codigo);
+
+    let mut tx = state
+        .auth_db
+        .begin()
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao iniciar rotacao: {}", e)))?;
+
+    // Hash e wrap na MESMA transacao: dessincronizar os dois produz um codigo que
+    // abre a chave mas e recusado na entrada, ou o contrario.
+    sqlx::query(
+        "UPDATE auth_users SET recovery_secret_hash = ?, recovery_secret_hash_prev = NULL \
+         WHERE id = ?",
+    )
+    .bind(&novo_hash)
+    .bind(&user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao gravar codigo: {}", e)))?;
+
+    sqlx::query(
+        "DELETE FROM dek_wraps WHERE slot = 'recovery_prev' AND dek_id IN \
+         (SELECT id FROM user_deks WHERE user_id = ?)",
+    )
+    .bind(&user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao limpar envelope anterior: {}", e)))?;
+
+    crate::crypto::envelope::set_recovery_wrap(&mut tx, &user_id, &dek, &novo_codigo).await?;
+
+    tx.commit()
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao concluir rotacao: {}", e)))?;
+
+    record_session_event(
+        &state.auth_db,
+        &user_id,
+        AuditAction::PasswordReset,
+        Some(&user_id),
+        serde_json::json!({"action": "recovery_code_rotated"}),
+    )
+    .await;
+
+    Ok(Json(ActionResponse::success(
+        "Novo código de recuperação gerado. Guarde-o: o anterior deixou de valer.",
+        serde_json::json!({ "user_id": user_id, "recovery_secret": novo_codigo }),
+    )))
+}
+
+/// Confirma que o usuario guardou o codigo atual, descartando o anterior.
+async fn ack_recovery_code_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ActionResponse<()>>, AppError> {
+    let token = extract_bearer_token(&headers)?;
+    let (user_id, _e, _f) = auth_service::validate_session(&state.auth_db, &token)
+        .await
+        .map_err(AppError::unauthorized)?;
+
+    sqlx::query("UPDATE auth_users SET recovery_secret_hash_prev = NULL WHERE id = ?")
+        .bind(&user_id)
+        .execute(&state.auth_db)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao confirmar codigo: {}", e)))?;
+    crate::crypto::envelope::drop_previous_recovery_wrap(&state.auth_db, &user_id).await?;
+
+    Ok(Json(ActionResponse::<()>::success_empty(
+        "Código confirmado. O anterior foi descartado.",
     )))
 }
 

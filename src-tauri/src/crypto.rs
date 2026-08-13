@@ -71,6 +71,34 @@ fn cache_key(user_id: &str, key: [u8; 32]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Abre a DEK do usuario com a senha e devolve o objeto, sem cachear.
+///
+/// Usada por quem precisa da chave para reembrulha-la — trocar senha, rotacionar
+/// o codigo de recuperacao — e nao para cifrar dado. Enquanto a DEK for a legada,
+/// cai para a derivacao do pepper pelo mesmo motivo explicado em
+/// `unlock_user_crypto`: nao transformar a transicao em perda de acesso.
+pub async fn unwrap_dek_for_user(
+    auth_db: &sqlx::SqlitePool,
+    user_id: &str,
+    password: &str,
+) -> Result<envelope::Dek, AppError> {
+    use envelope::{DekRole, DekSource, Slot};
+
+    match envelope::unwrap_current(auth_db, user_id, password, &[Slot::Password]).await {
+        Ok(dek) => Ok(dek),
+        Err(e) => {
+            let deks = envelope::load_deks(auth_db, user_id).await?;
+            let legada = deks
+                .iter()
+                .any(|d| d.role == DekRole::Current && d.source == DekSource::LegacyPepperV1);
+            if legada {
+                return Ok(envelope::Dek::from_bytes(derive_user_key(user_id)?));
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Carrega a chave de dados **a partir da senha**, pelo envelope.
 ///
 /// Esta e a funcao que os handlers de register/login/unlock usam. Se o usuario

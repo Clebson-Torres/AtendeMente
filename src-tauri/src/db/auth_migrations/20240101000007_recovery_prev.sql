@@ -1,0 +1,18 @@
+-- Guarda o hash do codigo de recuperacao ANTERIOR, aceito ate o usuario
+-- confirmar que anotou o novo.
+--
+-- Por que isto e necessario: quando o codigo passa a proteger uma copia da chave
+-- de dados, rotaciona-lo sem rede de seguranca cria um modo de falha sem volta.
+-- A sequencia e realista: o app emite um codigo novo, a pessoa fecha a tela sem
+-- anotar, e mais tarde esquece a senha. Sem o codigo novo e sem a senha, o
+-- prontuario de todos os pacientes fica inacessivel — e nao existe caminho de
+-- suporte, porque ninguem mais tem como abrir aquela chave.
+--
+-- O wrap anterior sobrevive no slot `recovery_prev` do envelope, mas isso por si
+-- so nao basta: `recover_with_secret` compara o codigo digitado contra
+-- `recovery_secret_hash`, que passa a ser so o do codigo novo. Sem guardar o
+-- hash anterior, o codigo antigo protegeria a chave e ainda assim seria recusado
+-- na porta de entrada.
+--
+-- Os dois — hash e wrap — sao limpos juntos no ack.
+ALTER TABLE auth_users ADD COLUMN recovery_secret_hash_prev TEXT;

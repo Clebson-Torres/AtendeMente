@@ -96,11 +96,25 @@ impl Slot {
     }
 
     /// Parametros padrao ao criar um wrap novo neste slot.
+    #[cfg(not(test))]
     pub fn default_params(&self) -> KdfParams {
         match self {
             Slot::Password => KdfParams::PASSWORD,
             Slot::Recovery | Slot::RecoveryPrev => KdfParams::RECOVERY,
         }
+    }
+
+    /// Nos testes, parametros baratos.
+    ///
+    /// Os de producao custam 113 ms e 288 ms por derivacao, e a suite faz
+    /// dezenas delas so para exercitar fiacao — o que levava o `cargo test` de
+    /// 27 s para 67 s, multiplicado pelos tres sistemas do CI. O custo real
+    /// continua coberto de duas formas: os parametros sao gravados por linha e
+    /// ha teste provando que wraps com parametros diferentes abrem, e o
+    /// benchmark `custo_do_kdf` mede os valores de producao de verdade.
+    #[cfg(test)]
+    pub fn default_params(&self) -> KdfParams {
+        KdfParams { m_cost: 64, t_cost: 1, p_cost: 1 }
     }
 }
 
@@ -421,6 +435,103 @@ pub async fn load_deks(
         });
     }
     Ok(out)
+}
+
+/// Grava o wrap de recuperacao para um codigo novo, em todas as DEKs do usuario.
+///
+/// **Um wrap so pode ser criado a partir do segredo em claro.** Nao existe forma
+/// de "mover" um wrap para outro slot: o AAD do slot esta autenticado dentro do
+/// ciphertext, entao renomear a linha produz um wrap que nao abre mais — que e
+/// exatamente o que o AAD existe para garantir. Preservar o codigo anterior,
+/// portanto, so e possivel quando ele esta em maos, e ha uma funcao separada
+/// para isso.
+///
+/// Precisa rodar na MESMA transacao que atualiza `recovery_secret_hash`: os dois
+/// representam o mesmo codigo, e dessincroniza-los produz um codigo que abre a
+/// chave mas e recusado na entrada, ou o contrario.
+///
+/// Aplica a todas as DEKs, inclusive a `retiring`: se a rotacao de chave estiver
+/// em andamento, deixar a antiga sem wrap novo a tornaria orfa.
+pub async fn set_recovery_wrap(
+    tx: &mut sqlx::SqliteConnection,
+    user_id: &str,
+    dek: &Dek,
+    novo_codigo: &str,
+) -> Result<(), AppError> {
+    let dek_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM user_deks WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao ler chaves: {}", e)))?;
+
+    if dek_ids.is_empty() {
+        return Err(AppError::internal(
+            "Nao ha chave envelopada para este usuario.",
+        ));
+    }
+
+    let novo = wrap_dek(
+        dek,
+        novo_codigo,
+        user_id,
+        Slot::Recovery,
+        Slot::Recovery.default_params(),
+    )?;
+    for dek_id in &dek_ids {
+        insert_wrap(&mut *tx, dek_id, &novo).await?;
+    }
+    Ok(())
+}
+
+/// Preserva o codigo ANTERIOR num wrap proprio, quando ele esta em claro.
+///
+/// Isso acontece no fluxo de reset, onde o usuario acabou de digitar o codigo
+/// antigo. Ali vale a pena: ele redefiniu a senha, recebeu um codigo novo, e
+/// pode fechar a tela sem anotar — se o antigo tambem deixasse de abrir a chave
+/// no mesmo instante, esquecer a senha depois seria perda definitiva.
+///
+/// No fluxo iniciado com a senha nao ha o que preservar, e nem precisa: o usuario
+/// acabou de digitar a senha, entao ainda a tem.
+pub async fn preserve_previous_recovery_wrap(
+    tx: &mut sqlx::SqliteConnection,
+    user_id: &str,
+    dek: &Dek,
+    codigo_anterior: &str,
+) -> Result<(), AppError> {
+    let dek_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM user_deks WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| AppError::internal(format!("Erro ao ler chaves: {}", e)))?;
+
+    let prev = wrap_dek(
+        dek,
+        codigo_anterior,
+        user_id,
+        Slot::RecoveryPrev,
+        Slot::RecoveryPrev.default_params(),
+    )?;
+    for dek_id in &dek_ids {
+        insert_wrap(&mut *tx, dek_id, &prev).await?;
+    }
+    Ok(())
+}
+
+/// Remove o wrap de recuperacao anterior. Chamado quando o usuario confirma que
+/// anotou o codigo novo.
+pub async fn drop_previous_recovery_wrap(
+    auth_db: &sqlx::SqlitePool,
+    user_id: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "DELETE FROM dek_wraps WHERE slot = 'recovery_prev' AND dek_id IN \
+         (SELECT id FROM user_deks WHERE user_id = ?)",
+    )
+    .bind(user_id)
+    .execute(auth_db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao limpar envelope anterior: {}", e)))?;
+    Ok(())
 }
 
 /// Abre a DEK atual do usuario com um segredo, tentando os slots informados.
@@ -833,6 +944,135 @@ mod tests {
             println!(
                 "  {:12} m={:>7} KiB t={}  embrulhar {:>7.0?}  desembrulhar {:>7.0?}",
                 nome, p.m_cost, p.t_cost, embrulhar, t.elapsed()
+            );
+        }
+    }
+
+    // ── Rotacao do codigo de recuperacao ────────────────────────────────────
+
+    /// O caso que motiva o endpoint: usuario de versao anterior tem codigo
+    /// valido mas nenhum wrap, porque um wrap so nasce do segredo em claro.
+    #[tokio::test]
+    async fn set_recovery_wrap_cria_o_wrap_que_faltava() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+
+        // Bootstrap sem codigo em claro: so o wrap de senha nasce.
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", None).await.unwrap();
+        let antes = load_deks(&db, UID).await.unwrap();
+        assert_eq!(antes[0].wraps.len(), 1, "comeca sem wrap de recuperacao");
+
+        let dek = crate::crypto::unwrap_dek_for_user(&db, UID, "senha").await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        set_recovery_wrap(&mut tx, UID, &dek, "NOVO-CODIGO-DE-128-BITS").await.unwrap();
+        tx.commit().await.unwrap();
+
+        let depois = load_deks(&db, UID).await.unwrap();
+        assert_eq!(depois[0].wraps.len(), 2);
+        // E o codigo novo abre a chave, sem a senha.
+        assert_eq!(
+            unwrap_current(&db, UID, "NOVO-CODIGO-DE-128-BITS", &[Slot::Recovery])
+                .await
+                .unwrap()
+                .check(),
+            dek.check()
+        );
+    }
+
+    /// Rotacionar substitui o wrap: o codigo anterior deixa de abrir a chave.
+    ///
+    /// Isso e deliberado no fluxo iniciado pela senha — manter o codigo antigo
+    /// abrindo os dados exigiria te-lo em claro, e nao o temos. Como a pessoa
+    /// acabou de digitar a senha, ela nao fica sem caminho.
+    #[tokio::test]
+    async fn rotacionar_invalida_o_codigo_anterior() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", Some("CODIGO-ANTIGO")).await.unwrap();
+
+        assert!(unwrap_current(&db, UID, "CODIGO-ANTIGO", &[Slot::Recovery]).await.is_ok());
+
+        let dek = crate::crypto::unwrap_dek_for_user(&db, UID, "senha").await.unwrap();
+        let mut tx = db.begin().await.unwrap();
+        set_recovery_wrap(&mut tx, UID, &dek, "CODIGO-NOVO").await.unwrap();
+        tx.commit().await.unwrap();
+
+        assert!(
+            unwrap_current(&db, UID, "CODIGO-ANTIGO", &[Slot::Recovery]).await.is_err(),
+            "o codigo anterior nao pode continuar abrindo a chave"
+        );
+        assert!(unwrap_current(&db, UID, "CODIGO-NOVO", &[Slot::Recovery]).await.is_ok());
+        // Continua tendo exatamente um wrap de recuperacao, nao dois.
+        let deks = load_deks(&db, UID).await.unwrap();
+        assert_eq!(
+            deks[0].wraps.iter().filter(|w| w.slot == Slot::Recovery).count(),
+            1
+        );
+    }
+
+    /// No fluxo de reset o codigo antigo esta em maos, entao pode ser preservado
+    /// — e e o que evita que "redefini a senha e fechei a tela sem anotar o
+    /// codigo novo" vire perda definitiva no dia em que ela esquecer a senha.
+    #[tokio::test]
+    async fn recovery_prev_mantem_o_codigo_anterior_valido_ate_o_ack() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", Some("CODIGO-ANTIGO")).await.unwrap();
+        let dek = crate::crypto::unwrap_dek_for_user(&db, UID, "senha").await.unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        preserve_previous_recovery_wrap(&mut tx, UID, &dek, "CODIGO-ANTIGO").await.unwrap();
+        set_recovery_wrap(&mut tx, UID, &dek, "CODIGO-NOVO").await.unwrap();
+        tx.commit().await.unwrap();
+
+        // Os dois abrem a chave, cada um no seu slot.
+        assert!(unwrap_current(&db, UID, "CODIGO-NOVO", &[Slot::Recovery]).await.is_ok());
+        assert!(
+            unwrap_current(&db, UID, "CODIGO-ANTIGO", &[Slot::RecoveryPrev]).await.is_ok(),
+            "antes do ack, o codigo anterior tem de continuar servindo"
+        );
+
+        drop_previous_recovery_wrap(&db, UID).await.unwrap();
+
+        assert!(
+            unwrap_current(&db, UID, "CODIGO-ANTIGO", &[Slot::RecoveryPrev]).await.is_err(),
+            "depois do ack, so o codigo novo vale"
+        );
+        assert!(unwrap_current(&db, UID, "CODIGO-NOVO", &[Slot::Recovery]).await.is_ok());
+    }
+
+    /// O wrap tem de ser gravado para TODAS as DEKs, inclusive a que esta saindo:
+    /// se a rotacao de chave estiver em andamento, deixar a antiga sem wrap novo
+    /// a tornaria orfa — e com ela os dados que ainda nao foram convertidos.
+    #[tokio::test]
+    async fn o_wrap_novo_cobre_tambem_a_dek_que_esta_saindo() {
+        let (_dir, db) = auth_db_de_teste().await;
+        crate::crypto::set_pepper(&[0x5au8; 32]);
+        crate::crypto::unlock_user_crypto(&db, UID, "senha", None).await.unwrap();
+
+        // Simula rotacao em andamento: a legada vira 'retiring' e entra uma nova.
+        sqlx::query("UPDATE user_deks SET role = 'retiring' WHERE user_id = ?")
+            .bind(UID)
+            .execute(&db)
+            .await
+            .unwrap();
+        let nova = Dek::generate();
+        let w = wrap_dek(&nova, "senha", UID, Slot::Password, RAPIDO).unwrap();
+        store_dek(&db, UID, &nova, DekRole::Current, DekSource::Random, &[w])
+            .await
+            .unwrap();
+
+        let mut tx = db.begin().await.unwrap();
+        set_recovery_wrap(&mut tx, UID, &nova, "CODIGO").await.unwrap();
+        tx.commit().await.unwrap();
+
+        let deks = load_deks(&db, UID).await.unwrap();
+        assert_eq!(deks.len(), 2);
+        for d in &deks {
+            assert!(
+                d.wraps.iter().any(|w| w.slot == Slot::Recovery),
+                "a DEK {:?} ficou sem wrap de recuperacao",
+                d.role
             );
         }
     }
