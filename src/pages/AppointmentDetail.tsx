@@ -59,6 +59,7 @@ export default function AppointmentDetail() {
   const [recordContent, setRecordContent] = useState("");
   const [recordLoading, setRecordLoading] = useState(false);
   const [recordSaving, setRecordSaving] = useState(false);
+  const [recordError, setRecordError] = useState("");
 
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelSeriesEnabled, setCancelSeriesEnabled] = useState(false);
@@ -86,17 +87,41 @@ export default function AppointmentDetail() {
     }
   }
 
+  /**
+   * Carrega o prontuário já salvo desta consulta.
+   *
+   * Esta função existia e **nunca era chamada** — havia um único `useEffect`, e
+   * ele chamava só `load()`. O efeito prático era o pior possível: o campo abria
+   * sempre vazio, o texto era salvo de verdade no banco, e ao reabrir a consulta
+   * parecia que nada tinha sido gravado. Quem estava escrevendo o prontuário
+   * concluía que perdeu o registro da sessão.
+   *
+   * O `catch` também não pode zerar o campo em silêncio: "não existe prontuário
+   * ainda" e "não consegui ler o prontuário" pedem respostas opostas — na
+   * primeira se escreve, na segunda não se escreve por cima.
+   */
   async function loadRecord() {
     if (!id) return;
     setRecordLoading(true);
     try {
       const content = await api.records.get(id);
       setRecordContent(content);
-    } catch { setRecordContent(""); }
-    finally { setRecordLoading(false); }
+      setRecordError("");
+    } catch (e: any) {
+      const msg: string = e?.message || "";
+      // 404 é o caso normal de consulta sem prontuário.
+      const aindaNaoExiste = /nao encontrado|não encontrado/i.test(msg);
+      setRecordContent("");
+      setRecordError(aindaNaoExiste ? "" : msg || "Não foi possível carregar o prontuário.");
+    } finally {
+      setRecordLoading(false);
+    }
   }
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    load();
+    loadRecord();
+  }, [id]);
 
   async function onPay(data: PaymentInput) {
     if (!id) return;
@@ -148,6 +173,9 @@ export default function AppointmentDetail() {
     setRecordSaving(true);
     try {
       await api.records.save({ appointment_id: id, patient_id: appt.patient_id, content: recordContent });
+      // Reler do servidor antes de dizer "salvo": a notificação passa a refletir
+      // o que está gravado, e não apenas que a requisição não deu erro.
+      await loadRecord();
       toast("Prontuário salvo com segurança.");
     } catch (e: any) {
       toast(e.message, "error");
@@ -350,9 +378,21 @@ export default function AppointmentDetail() {
           <Skeleton className="h-5 w-full" />
         ) : (
           <>
-            <TextArea rows={12} placeholder="Registre aqui as anotações da sessão. O conteúdo será criptografado automaticamente." value={recordContent} onChange={(e) => setRecordContent(e.target.value)} className="font-mono text-sm" />
+            {recordError && (
+              /* Falha de LEITURA não pode virar campo vazio silencioso: salvar
+                 por cima apagaria um prontuário que existe e não pôde ser lido. */
+              <div role="alert" className="mb-3 text-sm bg-destructive/10 text-destructive p-3 rounded-xl">
+                <p className="font-medium">Não foi possível ler o prontuário desta sessão.</p>
+                <p className="mt-1">{recordError}</p>
+                <p className="mt-1 text-xs">
+                  Não escreva por cima antes de resolver — pode haver um registro salvo que
+                  não está sendo exibido.
+                </p>
+              </div>
+            )}
+            <TextArea rows={12} placeholder="Registre aqui as anotações da sessão. O conteúdo será criptografado automaticamente." value={recordContent} onChange={(e) => setRecordContent(e.target.value)} className="font-mono text-sm" disabled={!!recordError} />
             <div className="flex justify-end mt-3">
-              <Button onClick={handleSaveRecord} disabled={recordSaving}>{recordSaving ? "Salvando..." : "Salvar Prontuário"}</Button>
+              <Button onClick={handleSaveRecord} disabled={recordSaving || !!recordError}>{recordSaving ? "Salvando..." : "Salvar Prontuário"}</Button>
             </div>
           </>
         )}

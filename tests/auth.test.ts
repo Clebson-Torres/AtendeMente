@@ -316,7 +316,11 @@ describe("auth login flow", () => {
     expect(notifiedUser).toBeNull();
     const call = fetchCalls.find((c) => c.url === `${API}/auth/logout`);
     expect(call).toBeDefined();
-    expect(call!.method).toBe("GET");
+    // POST, e nao GET: a rota e `post(logout_handler)` no Axum. Este assert
+    // exigia GET — o que o cliente fazia, nao o que o servidor aceita — e por
+    // isso o 405 passava despercebido: a sessao nunca era revogada no banco e a
+    // chave de dados nunca saia da memoria do processo.
+    expect(call!.method).toBe("POST");
   });
 
   it("logout without token skips API request", async () => {
@@ -379,7 +383,9 @@ describe("auth login flow", () => {
 
     const call = fetchCalls.find((c) => c.url === `${API}/auth/lock`);
     expect(call).toBeDefined();
-    expect(call!.method).toBe("GET");
+    // Mesma armadilha do logout: com GET, o bloqueio por inatividade recebia 405
+    // e a chave seguia na memoria — a tela parecia bloqueada e nao estava.
+    expect(call!.method).toBe("POST");
   });
 
   it("unlock calls /auth/unlock with password", async () => {

@@ -49,23 +49,57 @@ function notify(user: AuthUser) {
 
 // ─── API helpers ─────────────────────────────────────────────────────────
 
-async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
+/**
+ * O método é EXPLÍCITO, e isso não é preciosismo.
+ *
+ * Antes ele era inferido de `body ? "POST" : "GET"`, e três rotas `POST` sem
+ * corpo acabavam sendo chamadas com GET. O Axum responde 405 com **corpo
+ * vazio**, então `res.json()` estourava com "Unexpected end of JSON input" — uma
+ * mensagem que não aponta para nada. Pior: onde o erro era engolido, a falha
+ * ficava invisível.
+ *
+ * O que estava quebrado por causa disso:
+ *
+ * - `POST /auth/lock` — o bloqueio por inatividade nunca limpava a chave no
+ *   servidor. O overlay subia de qualquer forma porque o erro era ignorado, então
+ *   a tela parecia bloqueada enquanto a chave seguia na memória do processo.
+ * - `POST /auth/logout` — a sessão nunca era revogada no banco e a chave nunca
+ *   saía da memória; o token era apagado só localmente.
+ * - `POST /auth/recovery-code/ack` — quebrava na cara do usuário.
+ */
+async function apiRequest<T>(
+  path: string,
+  body?: unknown,
+  method: "GET" | "POST" | "PATCH" = body ? "POST" : "GET"
+): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getStoredToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(`${API}${path}`, {
-    method: body ? "POST" : "GET",
+    method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  const json = await res.json();
+  // Uma resposta sem corpo — 405, 502, um proxy no meio — não pode virar
+  // "Unexpected end of JSON input", que não aponta para nada. O status é a
+  // informação que resolve, então ele entra na mensagem.
+  let json: { success?: boolean; message?: string; data?: T };
+  try {
+    json = await res.json();
+  } catch {
+    throw new Error(
+      res.ok
+        ? "O servidor respondeu sem conteúdo."
+        : `O servidor recusou a requisição (HTTP ${res.status}).`
+    );
+  }
 
   if (!res.ok || !json.success) {
     throw new Error(json.message || "Erro na requisição");
   }
-  return json.data;
+  return json.data as T;
 }
 
 // ─── Token management (sessionStorage — persists on F5, cleared on tab close) ──
@@ -145,6 +179,20 @@ export async function login(email: string, password: string): Promise<void> {
     email: data.email,
     onboarding_completed: data.onboarding_completed,
   });
+
+  // O `/auth/login` não informa o estado da chave, e é justamente no login que o
+  // envelope é criado para quem vem de versão anterior. Sem esta chamada, os
+  // avisos de segurança só apareciam depois de um F5 — foi por isso que os dois
+  // cartões pendentes surgiram "do nada" ao importar um backup: o import
+  // recarrega a tela e aí sim o /auth/me rodava.
+  //
+  // Best-effort: se falhar, o login continua válido e o aviso aparece na próxima
+  // navegação. Bloquear a entrada por causa de um indicador seria pior.
+  try {
+    await completeFromStoredToken();
+  } catch {
+    // silencioso de propósito
+  }
 }
 
 /** Complete authentication from stored token after registration */
@@ -228,7 +276,7 @@ export async function logout() {
   const token = getStoredToken();
   if (token) {
     try {
-      await apiRequest("/auth/logout");
+      await apiRequest("/auth/logout", undefined, "POST");
     } catch {
       // Ignore errors, clear locally anyway
     }
@@ -238,7 +286,7 @@ export async function logout() {
 }
 
 export async function lock(): Promise<void> {
-  await apiRequest<void>("/auth/lock");
+  await apiRequest<void>("/auth/lock", undefined, "POST");
 }
 
 export async function unlock(password: string): Promise<void> {
@@ -322,7 +370,7 @@ export async function rotateDataKey(
 
 /** Confirma que o código atual foi guardado, descartando o anterior. */
 export async function ackRecoveryCode(): Promise<void> {
-  await apiRequest<void>("/auth/recovery-code/ack");
+  await apiRequest<void>("/auth/recovery-code/ack", undefined, "POST");
 }
 
 // ─── Session restore ─────────────────────────────────────────────────────

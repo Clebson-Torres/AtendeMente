@@ -18,7 +18,7 @@ async function chegarNaTelaDoCodigo() {
   rotateRecoveryCode.mockResolvedValue({ user_id: "u-1", recovery_secret: CODIGO });
   const onDone = vi.fn();
   render(<RecoveryCodeSetup onDone={onDone} />);
-  fireEvent.click(screen.getByRole("button", { name: /pronta para anotar/i }));
+  fireEvent.click(screen.getByRole("button", { name: /tenho onde anotar/i }));
   fireEvent.change(screen.getByLabelText(/senha/i), { target: { value: "minha-senha" } });
   fireEvent.click(screen.getByRole("button", { name: /gerar c[óo]digo/i }));
   await screen.findByText(CODIGO);
@@ -43,7 +43,7 @@ describe("RecoveryCodeSetup", () => {
 
   it("exige a senha para emitir", async () => {
     render(<RecoveryCodeSetup onDone={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /pronta para anotar/i }));
+    fireEvent.click(screen.getByRole("button", { name: /tenho onde anotar/i }));
     fireEvent.click(screen.getByRole("button", { name: /gerar c[óo]digo/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/informe sua senha/i);
     expect(rotateRecoveryCode).not.toHaveBeenCalled();
@@ -83,7 +83,7 @@ describe("RecoveryCodeSetup", () => {
   it("mostra o erro do servidor quando a senha está incorreta", async () => {
     rotateRecoveryCode.mockRejectedValue(new Error("Senha incorreta."));
     render(<RecoveryCodeSetup onDone={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /pronta para anotar/i }));
+    fireEvent.click(screen.getByRole("button", { name: /tenho onde anotar/i }));
     fireEvent.change(screen.getByLabelText(/senha/i), { target: { value: "errada" } });
     fireEvent.click(screen.getByRole("button", { name: /gerar c[óo]digo/i }));
 

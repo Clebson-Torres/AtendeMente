@@ -13,8 +13,8 @@ interface Props {
    *
    * Concluir o onboarding NÃO garante isso: quem vem de versão anterior tem um
    * código válido mas nenhum envelope, porque um envelope só nasce do segredo em
-   * claro. Mostrar "Ativo" nesse estado seria dizer à psicóloga que ela tem uma
-   * proteção que não tem.
+   * claro. Mostrar "Ativo" nesse estado seria afirmar uma proteção que a conta
+   * não tem.
    */
   recoveryWrapMissing?: boolean;
   /**

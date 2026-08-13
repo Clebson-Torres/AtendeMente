@@ -146,7 +146,7 @@ export default function RecoveryCodeSetup({ onDone, onCancel }: Props) {
               onClick={() => setEtapa("senha")}
               className="flex-1 bg-primary text-primary-foreground rounded-xl py-2.5 text-sm font-medium cursor-pointer"
             >
-              Estou pronta para anotar
+              Já tenho onde anotar
             </button>
             {onCancel && (
               <button
