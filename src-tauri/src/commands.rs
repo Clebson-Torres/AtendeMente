@@ -41,10 +41,13 @@ pub async fn cmd_export_patient_zip(
     state: tauri::State<'_, Arc<AppState>>,
     token: String,
     patient_id: String,
+    // Senha que protege o ZIP. Obrigatoria: o arquivo leva o prontuario completo
+    // em claro dentro dele.
+    export_password: String,
 ) -> Result<String, String> {
     let (user_id, db) = validate_token_and_get_db(&state, &token).await?;
 
-    let bundle = features::exports::export_patient_bundle(&db, &user_id, &patient_id)
+    let bundle = features::exports::export_patient_bundle(&db, &user_id, &patient_id, &export_password)
         .await
         .map_err(|e| format!("Export error: {}", e))?;
 

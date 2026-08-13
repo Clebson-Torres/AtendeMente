@@ -219,16 +219,33 @@ export const api = {
   },
 
   exports: {
-    patient: async (id: string): Promise<Blob | void> => {
+    /**
+     * Exporta o dossiê do paciente num ZIP protegido por senha.
+     *
+     * A senha é obrigatória: o arquivo contém nome, contato, histórico clínico,
+     * medicações, anotações, resumo de cada sessão e os anexos — tudo em claro
+     * dentro dele. Ele nascia sem proteção nenhuma e ia para a pasta de
+     * Downloads, que costuma estar sincronizada com nuvem.
+     *
+     * `POST` porque a senha vai no corpo. Em URL ou query string ela ficaria no
+     * histórico, no log de qualquer proxy e no título da janela.
+     */
+    patient: async (id: string, password: string): Promise<Blob | void> => {
       if (isTauri()) {
         await tauriInvoke<string>("cmd_export_patient_zip", {
           token: getCurrentToken(),
           patientId: id,
+          exportPassword: password,
         });
         return;
       }
       const res = await fetch(`${API}/exports/patient/${id}`, {
-        headers: { Authorization: `Bearer ${getCurrentToken()}` },
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${getCurrentToken()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));

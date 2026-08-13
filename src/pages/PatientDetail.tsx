@@ -6,6 +6,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import { formatDate, formatTime } from "../lib/format";
 import { downloadFile } from "../lib/utils";
 import { DetailSkeleton } from "../components/ui/Skeleton";
+import Modal from "../components/ui/Modal";
 import { ArrowLeft, User, Phone, Calendar, FileText, Download, Video } from "lucide-react";
 
 export default function PatientDetail() {
@@ -15,6 +16,10 @@ export default function PatientDetail() {
   const [appointments, setAppointments] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportPassword, setExportPassword] = useState("");
+  const [exportConfirm, setExportConfirm] = useState("");
+  const [exportErro, setExportErro] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -38,14 +43,26 @@ export default function PatientDetail() {
 
   async function handleExport() {
     if (!id) return;
+    if (exportPassword.length < 8) {
+      setExportErro("A senha precisa de no mínimo 8 caracteres.");
+      return;
+    }
+    if (exportPassword !== exportConfirm) {
+      setExportErro("As senhas não conferem.");
+      return;
+    }
+    setExportErro("");
     setExporting(true);
     try {
-      const blob = await api.exports.patient(id);
+      const blob = await api.exports.patient(id, exportPassword);
       if (blob) {
         await downloadFile(blob, `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`);
       }
+      setExportOpen(false);
+      setExportPassword("");
+      setExportConfirm("");
     } catch (e: any) {
-      setError(e.message || "Erro ao exportar");
+      setExportErro(e.message || "Erro ao exportar");
     } finally {
       setExporting(false);
     }
@@ -86,7 +103,7 @@ export default function PatientDetail() {
                   <Video className="h-4 w-4 mr-2" />Iniciar Atendimento
                 </Button>
               </a>
-              <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+              <Button variant="outline" size="sm" onClick={() => { setExportErro(""); setExportOpen(true); }} disabled={exporting}>
                 <Download className="h-4 w-4 mr-2" />{exporting ? "Exportando..." : "Exportar ZIP"}
               </Button>
             </div>
@@ -177,6 +194,71 @@ export default function PatientDetail() {
           <p className="text-sm text-muted-foreground whitespace-pre-wrap">{patient.medications_in_use}</p>
         </div>
       )}
+
+      {/* A senha é obrigatória porque o arquivo leva o prontuário completo em
+          claro dentro dele, e vai para uma pasta que costuma estar sincronizada
+          com nuvem. Não há botão de "exportar sem senha". */}
+      <Modal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title="Exportar dossiê do paciente"
+        size="md"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-700">
+            O arquivo vai conter <strong>tudo sobre este paciente</strong>: contato, histórico
+            clínico, medicações, anotações, o resumo de cada sessão e os anexos.
+          </p>
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 rounded-xl text-sm text-slate-800">
+            Defina uma senha para proteger o ZIP. Sem ela, qualquer pessoa com acesso ao
+            arquivo lê o prontuário — inclusive se ele for para uma pasta sincronizada com
+            nuvem ou anexado num e-mail.
+          </div>
+
+          {exportErro && (
+            <p role="alert" className="text-sm bg-destructive/10 text-destructive p-3 rounded-xl">
+              {exportErro}
+            </p>
+          )}
+
+          <div>
+            <label className="block text-sm text-slate-700 mb-1" htmlFor="exp-senha">
+              Senha do arquivo (mínimo 8 caracteres)
+            </label>
+            <input
+              id="exp-senha"
+              type="password"
+              autoComplete="new-password"
+              value={exportPassword}
+              onChange={(e) => setExportPassword(e.target.value)}
+              className="w-full rounded-xl border border-border px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-700 mb-1" htmlFor="exp-conf">
+              Repita a senha
+            </label>
+            <input
+              id="exp-conf"
+              type="password"
+              autoComplete="new-password"
+              value={exportConfirm}
+              onChange={(e) => setExportConfirm(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleExport()}
+              className="w-full rounded-xl border border-border px-3 py-2 text-sm"
+            />
+          </div>
+
+          <p className="text-xs text-slate-600">
+            Guarde a senha: ela não fica salva em nenhum lugar, e sem ela o arquivo não abre.
+            O ZIP usa AES-256 e abre no 7-Zip, WinRAR ou no Explorador do Windows.
+          </p>
+
+          <Button onClick={handleExport} disabled={exporting} className="w-full">
+            {exporting ? "Exportando..." : "Exportar com senha"}
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

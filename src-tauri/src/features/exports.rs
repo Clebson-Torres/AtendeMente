@@ -65,11 +65,35 @@ pub(crate) fn escape_csv(s: &str) -> String {
     }
 }
 
+/// Tamanho minimo da senha do export. Igual ao do backup, pelo mesmo motivo: o
+/// arquivo contem o prontuario completo em texto claro dentro do envelope.
+pub const MIN_EXPORT_PASSWORD_LEN: usize = 8;
+
+/// Exporta o dossie de um paciente num ZIP **protegido por senha**.
+///
+/// O arquivo contem tudo em claro: nome, contato, historico clinico, medicacoes,
+/// anotacoes, resumo de cada sessao e os anexos decifrados. Ele nascia sem
+/// nenhuma protecao e ia para a pasta de Downloads — que frequentemente esta
+/// sincronizada com nuvem. Era o maior vazamento em texto claro que restava no
+/// app depois da reforma de criptografia.
+///
+/// A cifra e AES-256 do proprio formato ZIP, e nao o envelope `ATND` usado nos
+/// backups. A diferenca importa: um export existe para SER ABERTO — pelo proprio
+/// usuario, por um colega, as vezes pelo paciente — e nao ha caminho de import
+/// para ele no app. Num formato proprietario o arquivo seria inutil. Assim ele
+/// continua abrindo no 7-Zip, WinRAR ou Explorador, pedindo a senha.
 pub async fn export_patient_bundle(
     db: &SqlitePool,
     user_id: &str,
     patient_id: &str,
+    password: &str,
 ) -> Result<ExportBundle, AppError> {
+    if password.chars().count() < MIN_EXPORT_PASSWORD_LEN {
+        return Err(AppError::bad_request(format!(
+            "Defina uma senha de no minimo {} caracteres para proteger a exportacao.",
+            MIN_EXPORT_PASSWORD_LEN
+        )));
+    }
     // Get patient (PII decrypted from the encrypted blob)
     let patient = crate::features::patients::get_patient_detail(db, user_id, patient_id).await?;
 
@@ -116,7 +140,8 @@ pub async fn export_patient_bundle(
 
     let options: FileOptions<'_, ()> = FileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
-        .unix_permissions(0o644);
+        .unix_permissions(0o644)
+        .with_aes_encryption(zip::AesMode::Aes256, password);
 
     // Add manifest.json
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -209,6 +234,105 @@ pub async fn export_patient_bundle(
 #[cfg(test)]
 mod tests {
     use super::escape_csv;
+    use sqlx::SqlitePool;
+
+    const UID: &str = "550e8400-e29b-41d4-a716-4466554400e1";
+
+    async fn base() -> (tempfile::TempDir, SqlitePool) {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}?mode=rwc", dir.path().join("e.db").display());
+        let db = crate::db::init_database(&url).await.unwrap();
+        crate::crypto::set_pepper(&[0x31u8; 32]);
+        crate::crypto::init_user_crypto(UID).unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, email, full_name, created_at, updated_at) \
+             VALUES (?, 'e@e.invalid', 'Nome', '2026-01-01', '2026-01-01')",
+        )
+        .bind(UID)
+        .execute(&db)
+        .await
+        .unwrap();
+        let pii = crate::crypto::encrypt_content(
+            r#"{"phone":"11999990000","health_history":"FICTICIO: dado sensivel"}"#,
+            UID,
+        )
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, status, created_at, updated_at, \
+             pii_encrypted, pii_iv, pii_auth_tag) VALUES ('pac', ?, 'Paciente Teste', \
+             'active', '2026-01-01', '2026-01-01', ?, ?, ?)",
+        )
+        .bind(UID)
+        .bind(&pii.encrypted_payload)
+        .bind(&pii.iv)
+        .bind(&pii.auth_tag)
+        .execute(&db)
+        .await
+        .unwrap();
+        (dir, db)
+    }
+
+    /// O dossie leva o prontuario completo em claro dentro dele e vai para a
+    /// pasta de Downloads, que costuma estar sincronizada com nuvem. Exportar
+    /// sem senha nao pode ser possivel.
+    #[tokio::test]
+    async fn recusa_exportar_sem_senha_ou_com_senha_curta() {
+        let (_d, db) = base().await;
+        for senha in ["", "1234567"] {
+            // `expect_err` exigiria `Debug` em `ExportBundle`, e derivar Debug num
+            // tipo que carrega o dossie inteiro em claro seria um convite a
+            // vazamento por log. Melhor casar o resultado a mao.
+            match super::export_patient_bundle(&db, UID, "pac", senha).await {
+                Ok(_) => panic!("exportar com senha {:?} deveria ser recusado", senha),
+                Err(e) => assert!(
+                    format!("{:?}", e).contains("senha"),
+                    "a mensagem tem de dizer o que falta: {:?}",
+                    e
+                ),
+            }
+        }
+    }
+
+    /// O ZIP tem de estar cifrado de verdade — e nao apenas "marcado" como tal.
+    ///
+    /// Duas garantias: a senha errada nao abre, e o conteudo sensivel nao aparece
+    /// nos bytes do arquivo. A segunda existe porque um ZIP com nomes de entrada
+    /// em claro e conteudo cifrado ainda vazaria se o manifesto nao estivesse
+    /// coberto.
+    #[tokio::test]
+    async fn o_zip_exportado_exige_a_senha_e_nao_vaza_o_conteudo() {
+        let (_d, db) = base().await;
+        let bundle = super::export_patient_bundle(&db, UID, "pac", "senha-do-export")
+            .await
+            .unwrap();
+
+        assert!(
+            !String::from_utf8_lossy(&bundle.buffer).contains("11999990000"),
+            "o telefone nao pode aparecer nos bytes do ZIP"
+        );
+        assert!(
+            !String::from_utf8_lossy(&bundle.buffer).contains("dado sensivel"),
+            "o historico clinico nao pode aparecer nos bytes do ZIP"
+        );
+
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(bundle.buffer.clone())).unwrap();
+        assert!(
+            zip.by_name("manifest.json").is_err(),
+            "sem senha, a entrada nao pode ser lida"
+        );
+
+        // Com a senha certa, o manifesto abre e traz a PII decifrada.
+        let mut zip =
+            zip::ZipArchive::new(std::io::Cursor::new(bundle.buffer)).unwrap();
+        let mut entrada = zip
+            .by_name_decrypt("manifest.json", b"senha-do-export")
+            .expect("manifest.json deveria existir");
+        let mut conteudo = String::new();
+        std::io::Read::read_to_string(&mut entrada, &mut conteudo).unwrap();
+        assert!(conteudo.contains("11999990000"), "o manifesto deve trazer a PII");
+    }
+
 
     #[test]
     fn plain_values_pass_through() {

@@ -98,7 +98,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/files/appointment/{appointment_id}", get(list_files_by_appointment))
         .route("/files/{id}/download", get(download_file))
         .route("/files/{id}", delete(delete_file_handler))
-        .route("/exports/patient/{id}", get(export_patient))
+        .route("/exports/patient/{id}", post(export_patient))
         .route("/exports/patients/csv", get(export_patients_csv))
         .route("/exports/appointments/csv", get(export_appointments_csv))
         .route("/exports/payments/csv", get(export_payments_csv))
@@ -620,15 +620,24 @@ async fn delete_file_handler(
 
 // ─── Exports ────────────────────────────────────────────────────────────────
 
+#[derive(serde::Deserialize)]
+struct ExportPatientInput {
+    password: String,
+}
+
+/// `POST`, e nao `GET`, porque a senha vai no corpo — nunca na URL nem em query
+/// string, que ficam em historico, em log de proxy e no titulo da janela.
 async fn export_patient(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Json(input): Json<ExportPatientInput>,
 ) -> Result<(axum::http::StatusCode, [(axum::http::HeaderName, String); 2], Vec<u8>), AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
     let db = state.get_or_open_user_db(&user.id).await?;
     crate::rate_limit::enforce(&db, crate::rate_limit::Scope::Export, &user.id).await?;
-    let bundle = features::exports::export_patient_bundle(&db, &user.id, &id).await?;
+    let bundle =
+        features::exports::export_patient_bundle(&db, &user.id, &id, &input.password).await?;
     Ok((
         axum::http::StatusCode::OK,
         [
