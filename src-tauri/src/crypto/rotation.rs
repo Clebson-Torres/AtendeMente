@@ -145,6 +145,201 @@ pub async fn rotate_to_random_dek(
     Ok(report)
 }
 
+/// Quantos registros a reparacao converteu, e quantos nao abriram com nenhuma
+/// das chaves conhecidas.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RepairReport {
+    pub patients: usize,
+    pub session_records: usize,
+    pub files: usize,
+    /// Registros que nao abriram nem com a DEK atual nem com a chave legada.
+    /// Nada foi escrito sobre eles.
+    pub illegible: usize,
+}
+
+impl RepairReport {
+    pub fn touched(&self) -> usize {
+        self.patients + self.session_records + self.files
+    }
+}
+
+/// Converte registros que ficaram sob a chave legada para a DEK atual.
+///
+/// Existe por um caso concreto: restaurar um backup feito ANTES da rotacao traz
+/// dados cifrados com a chave legada. O restore agora converte na hora, mas quem
+/// passou por essa sequencia na versao anterior tem registros parados nesse
+/// estado — a DEK atual nao os abre, e a chave antiga nao esta no chaveiro.
+///
+/// Diferencas deliberadas em relacao a rotacao:
+///
+/// - **Tolerante por registro.** A rotacao aborta tudo se algo nao abre, porque
+///   ela vai descartar a chave antiga e nao pode deixar nada para tras. Aqui nada
+///   e descartado, entao um registro ilegivel e contado e ignorado em vez de
+///   impedir a reparacao dos outros.
+/// - **Nunca bloqueia a entrada.** Quem chama trata como best-effort.
+///
+/// E uma reparacao de TRANSICAO: ela depende de a chave legada ainda ser
+/// derivavel, ou seja, de o pepper existir no cofre. Quando o pepper for
+/// removido, `derive_user_key` falha e esta funcao vira no-op — que e o
+/// comportamento correto, porque a essa altura nao deve haver nada sob a chave
+/// legada.
+pub async fn repair_rows_under_legacy_key(
+    user_db: &SqlitePool,
+    auth_db: &SqlitePool,
+    user_id: &str,
+) -> Result<RepairReport, AppError> {
+    let mut rel = RepairReport::default();
+
+    // So faz sentido se a chave atual NAO e a legada.
+    let deks = envelope::load_deks(auth_db, user_id).await?;
+    let atual = match deks.iter().find(|d| d.role == DekRole::Current) {
+        Some(d) => d,
+        None => return Ok(rel),
+    };
+    if atual.source != DekSource::Random {
+        return Ok(rel);
+    }
+    // Rotacao em andamento ja tem a chave antiga no chaveiro; deixa a rotacao
+    // terminar em vez de competir com ela.
+    if deks.iter().any(|d| d.role == DekRole::Retiring) {
+        return Ok(rel);
+    }
+
+    let dek_atual = super::load_key(user_id)?;
+    // Sem pepper (pos-R5) isto falha, e a reparacao simplesmente nao acontece.
+    let legada = match super::derive_user_key(user_id) {
+        Ok(k) => k,
+        Err(_) => return Ok(rel),
+    };
+    if legada == dek_atual {
+        return Ok(rel);
+    }
+
+    // ── patients ────────────────────────────────────────────────────────────
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT id, pii_encrypted, pii_iv, pii_auth_tag FROM patients \
+         WHERE user_id = ? AND pii_encrypted IS NOT NULL",
+    )
+    .bind(user_id)
+    .fetch_all(user_db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler pacientes: {}", e)))?;
+
+    for (id, enc, iv, tag) in rows {
+        let p = EncryptedPayload {
+            encrypted_payload: enc,
+            iv,
+            auth_tag: tag,
+            key_version: 1,
+        };
+        if super::decrypt_content_with_key(&p, &dek_atual).is_ok() {
+            continue;
+        }
+        match super::decrypt_content_with_key(&p, &legada) {
+            Ok(claro) => {
+                let novo = encrypt_content_with_key(&claro, &dek_atual)?;
+                sqlx::query(
+                    "UPDATE patients SET pii_encrypted=?, pii_iv=?, pii_auth_tag=?, \
+                     key_version=? WHERE id=?",
+                )
+                .bind(&novo.encrypted_payload)
+                .bind(&novo.iv)
+                .bind(&novo.auth_tag)
+                .bind(KEY_VERSION_ENVELOPE)
+                .bind(&id)
+                .execute(user_db)
+                .await
+                .map_err(|e| AppError::internal(format!("Erro ao reparar paciente: {}", e)))?;
+                rel.patients += 1;
+            }
+            Err(_) => rel.illegible += 1,
+        }
+    }
+
+    // ── session_records ─────────────────────────────────────────────────────
+    let recs: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT id, encrypted_payload, iv, auth_tag FROM session_records WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_all(user_db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler prontuarios: {}", e)))?;
+
+    for (id, enc, iv, tag) in recs {
+        let p = EncryptedPayload {
+            encrypted_payload: enc,
+            iv,
+            auth_tag: tag,
+            key_version: 1,
+        };
+        if super::decrypt_content_with_key(&p, &dek_atual).is_ok() {
+            continue;
+        }
+        match super::decrypt_content_with_key(&p, &legada) {
+            Ok(claro) => {
+                let novo = encrypt_content_with_key(&claro, &dek_atual)?;
+                sqlx::query(
+                    "UPDATE session_records SET encrypted_payload=?, iv=?, auth_tag=?, \
+                     key_version=? WHERE id=?",
+                )
+                .bind(&novo.encrypted_payload)
+                .bind(&novo.iv)
+                .bind(&novo.auth_tag)
+                .bind(KEY_VERSION_ENVELOPE)
+                .bind(&id)
+                .execute(user_db)
+                .await
+                .map_err(|e| AppError::internal(format!("Erro ao reparar prontuario: {}", e)))?;
+                rel.session_records += 1;
+            }
+            Err(_) => rel.illegible += 1,
+        }
+    }
+
+    // ── anexos ──────────────────────────────────────────────────────────────
+    let arqs: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, storage_path FROM record_files WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(user_db)
+            .await
+            .map_err(|e| AppError::internal(format!("Erro ao ler anexos: {}", e)))?;
+
+    for (id, caminho) in arqs {
+        let bytes = match tokio::fs::read(&caminho).await {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        // Cifrado com a chave atual? Nada a fazer.
+        if bytes.first() == Some(&0x01) && super::decrypt_file(&bytes, &dek_atual).is_ok() {
+            continue;
+        }
+        let claro = match super::decrypt_file(&bytes, &legada) {
+            Ok(c) => c,
+            Err(_) => {
+                rel.illegible += 1;
+                continue;
+            }
+        };
+        let novo = super::encrypt_file(&claro, &dek_atual)?;
+        let tmp = format!("{}.repair", caminho);
+        if tokio::fs::write(&tmp, &novo).await.is_err() {
+            continue;
+        }
+        if tokio::fs::rename(&tmp, &caminho).await.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            continue;
+        }
+        let _ = sqlx::query("UPDATE record_files SET encryption_version = ? WHERE id = ?")
+            .bind(KEY_VERSION_ENVELOPE)
+            .bind(&id)
+            .execute(user_db)
+            .await;
+        rel.files += 1;
+    }
+
+    Ok(rel)
+}
+
 /// Grava e **verifica** o backup de seguranca. Falhar aqui aborta a rotacao.
 async fn gravar_backup_de_seguranca(
     user_db: &SqlitePool,
@@ -719,6 +914,104 @@ mod tests {
             ler_paciente(&user_db, uid, "p1").await.unwrap(),
             "prontuario antes do backup"
         );
+    }
+
+    /// A reparacao para quem JA passou pela sequencia ruim antes da correcao.
+    ///
+    /// Reproduz o estado exato encontrado no uso real: conta rotacionada (DEK
+    /// aleatoria) com registros gravados sob a chave legada, e nenhuma chave
+    /// antiga no chaveiro. O app nao consegue ler; a reparacao converte.
+    #[tokio::test]
+    async fn repara_registros_parados_sob_a_chave_legada() {
+        let uid = "550e8400-e29b-41d4-a716-4466554400c6";
+        let (_dir, user_db, auth_db, config) = cenario(uid).await;
+        crypto::unlock_user_crypto(&auth_db, uid, SENHA, Some(CODIGO)).await.unwrap();
+        criar_paciente(&user_db, uid, "p1", "prontuario sob a chave legada").await;
+
+        // Guarda o texto cifrado com a chave LEGADA antes de rotacionar.
+        let legado: (String, String, String) = sqlx::query_as(
+            "SELECT pii_encrypted, pii_iv, pii_auth_tag FROM patients WHERE id='p1'",
+        )
+        .fetch_one(&user_db)
+        .await
+        .unwrap();
+
+        rotate_to_random_dek(&user_db, &auth_db, &config, uid, SENHA, CODIGO).await.unwrap();
+
+        // Simula o que o restore quebrado fazia: devolve a linha antiga.
+        sqlx::query(
+            "UPDATE patients SET pii_encrypted=?, pii_iv=?, pii_auth_tag=?, key_version=1 \
+             WHERE id='p1'",
+        )
+        .bind(&legado.0)
+        .bind(&legado.1)
+        .bind(&legado.2)
+        .execute(&user_db)
+        .await
+        .unwrap();
+
+        assert!(
+            ler_paciente(&user_db, uid, "p1").await.is_err(),
+            "o estado de partida tem de ser justamente o ilegivel"
+        );
+
+        let rel = repair_rows_under_legacy_key(&user_db, &auth_db, uid).await.unwrap();
+        assert_eq!(rel.patients, 1);
+        assert_eq!(rel.illegible, 0);
+        assert_eq!(
+            ler_paciente(&user_db, uid, "p1").await.unwrap(),
+            "prontuario sob a chave legada"
+        );
+
+        // Rodar de novo nao faz nada: tudo ja esta sob a chave atual.
+        let rel = repair_rows_under_legacy_key(&user_db, &auth_db, uid).await.unwrap();
+        assert_eq!(rel, RepairReport::default());
+    }
+
+    /// Um registro que nao abre com NENHUMA chave nao pode bloquear a reparacao
+    /// dos outros, nem ser sobrescrito.
+    #[tokio::test]
+    async fn registro_ilegivel_e_contado_e_preservado() {
+        let uid = "550e8400-e29b-41d4-a716-4466554400c7";
+        let (_dir, user_db, auth_db, config) = cenario(uid).await;
+        crypto::unlock_user_crypto(&auth_db, uid, SENHA, Some(CODIGO)).await.unwrap();
+        criar_paciente(&user_db, uid, "bom", "conteudo recuperavel").await;
+        let legado: (String, String, String) = sqlx::query_as(
+            "SELECT pii_encrypted, pii_iv, pii_auth_tag FROM patients WHERE id='bom'",
+        )
+        .fetch_one(&user_db)
+        .await
+        .unwrap();
+
+        rotate_to_random_dek(&user_db, &auth_db, &config, uid, SENHA, CODIGO).await.unwrap();
+
+        // Um volta para a chave legada; outro recebe lixo que nenhuma chave abre.
+        sqlx::query("UPDATE patients SET pii_encrypted=?, pii_iv=?, pii_auth_tag=?, key_version=1 WHERE id='bom'")
+            .bind(&legado.0).bind(&legado.1).bind(&legado.2)
+            .execute(&user_db).await.unwrap();
+        sqlx::query(
+            "INSERT INTO patients (id, user_id, full_name, status, created_at, updated_at, \
+             pii_encrypted, pii_iv, pii_auth_tag) VALUES ('ruim', ?, 'Ruim', 'active', \
+             '2026-01-01', '2026-01-01', 'bm90LXJlYWxseS1jaXBoZXI=', 'YWFhYWFhYWFhYWFh', \
+             'YmJiYmJiYmJiYmJiYmJiYg==')",
+        )
+        .bind(uid)
+        .execute(&user_db)
+        .await
+        .unwrap();
+
+        let rel = repair_rows_under_legacy_key(&user_db, &auth_db, uid).await.unwrap();
+        assert_eq!(rel.patients, 1, "o recuperavel foi convertido");
+        assert_eq!(rel.illegible, 1, "o ilegivel foi contado");
+        assert_eq!(ler_paciente(&user_db, uid, "bom").await.unwrap(), "conteudo recuperavel");
+
+        // E o ilegivel continua exatamente como estava — nada escrito por cima.
+        let blob: String =
+            sqlx::query_scalar("SELECT pii_encrypted FROM patients WHERE id='ruim'")
+                .fetch_one(&user_db)
+                .await
+                .unwrap();
+        assert_eq!(blob, "bm90LXJlYWxseS1jaXBoZXI=");
     }
 
     /// Rodar duas vezes seguidas nao pode fazer nada na segunda.

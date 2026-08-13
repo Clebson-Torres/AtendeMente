@@ -182,6 +182,10 @@ async fn login_handler(
         tracing::warn!("[Auth] Falha ao migrar PII em texto claro no login: {}", e);
     }
 
+    // Reparacao de transicao: converte registros que ficaram sob a chave legada.
+    // Best-effort de proposito — um problema aqui nao pode impedir a entrada.
+    reparar_chave_legada(&state, &user_db, &result.user_id).await;
+
     Ok(Json(ActionResponse::success(
         "Login realizado com sucesso!",
         serde_json::json!({
@@ -486,6 +490,29 @@ async fn ack_recovery_code_handler(
     )))
 }
 
+/// Converte registros parados sob a chave legada, e registra o resultado.
+///
+/// Chamada no login e no unlock. Best-effort: qualquer falha aqui vira aviso no
+/// log, nunca erro para o usuario — o custo de bloquear a entrada e maior que o
+/// de adiar a reparacao para a proxima autenticacao.
+async fn reparar_chave_legada(state: &Arc<AppState>, user_db: &sqlx::SqlitePool, user_id: &str) {
+    match crate::crypto::rotation::repair_rows_under_legacy_key(user_db, &state.auth_db, user_id)
+        .await
+    {
+        Ok(r) if r.touched() > 0 || r.illegible > 0 => {
+            tracing::info!(
+                "[Auth] Reparacao de chave: {} paciente(s), {} prontuario(s) e {} anexo(s)                  reconvertidos para a chave atual; {} ilegivel(is) mantido(s) intacto(s).",
+                r.patients,
+                r.session_records,
+                r.files,
+                r.illegible
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("[Auth] Reparacao de chave nao pode ser concluida: {}", e),
+    }
+}
+
 async fn recover_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<RecoverInput>,
@@ -631,6 +658,8 @@ async fn unlock_handler(
     if let Err(e) = crate::features::patients::migrate_plaintext_pii(&user_db, &user_id).await {
         tracing::warn!("[Auth] Falha ao migrar PII em texto claro no unlock: {}", e);
     }
+
+    reparar_chave_legada(&state, &user_db, &user_id).await;
 
     record_session_event(
         &state.auth_db,
