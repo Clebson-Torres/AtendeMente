@@ -78,19 +78,79 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, String> {
         .is_ok())
 }
 
-/// Generate a recovery secret (8 random bytes → 16 hex chars, format XXXX-XXXX-XXXX-XXXX)
+/// Gera um codigo de recuperacao: 16 bytes aleatorios em hex, agrupados de 4 em
+/// 4 (`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`).
+///
+/// Eram 8 bytes — 64 bits. Isso bastava enquanto o codigo so servia para
+/// redefinir a senha, com rate limit de 3 tentativas a cada 15 minutos pela
+/// rede. Passa a nao bastar quando ele protege uma copia da chave de dados: o
+/// material embrulhado viaja dentro de todo backup, entao o ataque deixa de ser
+/// online e passa a ser offline, com o arquivo em maos. Contra isso, 2^64 e
+/// alcancavel para quem tem GPU. Com 128 bits, nao e.
 pub fn generate_recovery_secret() -> String {
-    let mut bytes = [0u8; 8];
+    let mut bytes = [0u8; 16];
     OsRng.fill_bytes(&mut bytes);
     let hex_str: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-    format!("{}-{}-{}-{}", &hex_str[0..4], &hex_str[4..8], &hex_str[8..12], &hex_str[12..16])
+    hex_str
+        .as_bytes()
+        .chunks(4)
+        .map(|c| std::str::from_utf8(c).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
-/// Hash the recovery secret for storage
+/// Normaliza o codigo antes de hashear ou derivar: maiusculas e sem separadores.
+///
+/// Assim o usuario pode digitar com ou sem hifens, em qualquer caixa, e o
+/// resultado e o mesmo — o que importa quando o codigo e a unica coisa entre
+/// ele e o prontuario.
+pub fn normalize_recovery_secret(secret: &str) -> String {
+    secret
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Hash do codigo de recuperacao, com Argon2id.
+///
+/// Era SHA-256 puro, sem sal e sem alongamento — para um segredo de 64 bits,
+/// isso e uma tabela de busca para quem tiver o banco. Agora usa o mesmo
+/// esquema PHC da senha.
 pub fn hash_recovery_secret(secret: &str) -> String {
+    let normalizado = normalize_recovery_secret(secret);
+    match hash_password(&normalizado) {
+        Ok(h) => h,
+        // hash_password so falha por erro interno do Argon2; cair no SHA-256
+        // antigo aqui manteria o cadastro funcionando em vez de derrubar o
+        // registro inteiro, e a verificacao aceita os dois formatos.
+        Err(_) => legacy_sha256_recovery_hash(&normalizado),
+    }
+}
+
+fn legacy_sha256_recovery_hash(secret: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+/// Verifica o codigo contra o hash guardado, aceitando os dois formatos.
+///
+/// Os valores antigos sao 64 caracteres hex; os novos comecam com `$argon2id$`.
+/// Ramificar pelo prefixo evita uma migration e mantem funcionando o codigo que
+/// o usuario ja tem anotado.
+///
+/// O formato antigo era hasheado sem normalizacao, entao a comparacao legada
+/// tenta tambem o valor cru — senao um codigo valido de antes deixaria de ser
+/// aceito por causa de um hifen.
+pub fn verify_recovery_secret(secret: &str, stored_hash: &str) -> bool {
+    if stored_hash.starts_with("$argon2") {
+        let normalizado = normalize_recovery_secret(secret);
+        return verify_password(&normalizado, stored_hash).unwrap_or(false);
+    }
+    let normalizado = normalize_recovery_secret(secret);
+    constant_time_eq(&legacy_sha256_recovery_hash(&normalizado), stored_hash)
+        || constant_time_eq(&legacy_sha256_recovery_hash(secret), stored_hash)
 }
 
 /// Generate a session token (UUID v4 plaintext) and return both the token and its hash
@@ -383,9 +443,12 @@ pub async fn recover_with_secret(
         "Este código de recuperação já foi utilizado. Cada código só pode ser usado uma vez.".to_string()
     })?;
 
-    let computed_hash = hash_recovery_secret(recovery_secret);
-
-    if !constant_time_eq(&stored_hash, &computed_hash) {
+    // Precisa passar por `verify_recovery_secret`, e nao por comparacao de
+    // hashes: com Argon2 o sal e aleatorio, entao hashear o mesmo codigo duas
+    // vezes produz strings diferentes e a igualdade nunca casaria. A funcao
+    // ramifica pelo prefixo e aceita tambem os hashes SHA-256 antigos, para o
+    // codigo que o usuario ja tem anotado continuar valendo.
+    if !verify_recovery_secret(recovery_secret, &stored_hash) {
         return Err("Chave de recuperação inválida.".into());
     }
 

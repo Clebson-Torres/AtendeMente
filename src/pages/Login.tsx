@@ -7,7 +7,27 @@ import { useAuth } from "../App";
 import { loginSchema, resetPasswordSchema, type LoginInput } from "../lib/schemas";
 import FieldError from "../components/ui/FieldError";
 
-const RECOVERY_CODE_REGEX = /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/;
+/**
+ * Aceita as duas gerações de código de recuperação, com ou sem separadores.
+ *
+ * O código passou de 8 para 16 bytes — 16 para 32 dígitos hex — quando ele
+ * deixou de servir apenas para redefinir a senha e passou a proteger uma cópia
+ * da chave de dados. A regex anterior exigia exatamente 4 grupos de 4, então
+ * rejeitaria um código novo válido antes mesmo de enviá-lo ao servidor.
+ *
+ * Os separadores e a caixa são normalizados aqui e também no backend, porque
+ * quem digita um código de 32 dígitos copiado de um papel erra hífen com
+ * facilidade — e esse código pode ser a única coisa entre a profissional e o
+ * prontuário dos pacientes dela.
+ */
+export function normalizeRecoveryCode(raw: string): string {
+  return raw.replace(/[^0-9a-zA-Z]/g, "").toUpperCase();
+}
+
+export function isValidRecoveryCode(raw: string): boolean {
+  const clean = normalizeRecoveryCode(raw);
+  return /^[0-9A-F]+$/.test(clean) && (clean.length === 16 || clean.length === 32);
+}
 
 export default function Login() {
   const navigate = useNavigate();
@@ -86,8 +106,11 @@ export default function Login() {
 
   async function handleManualRecover() {
     const code = manualCode.trim().toUpperCase();
-    if (!RECOVERY_CODE_REGEX.test(code)) {
-      setError("O código de recuperação deve estar no formato XXXX-XXXX-XXXX-XXXX.");
+    if (!isValidRecoveryCode(code)) {
+      setError(
+        "Código de recuperação inválido. Ele tem 16 ou 32 caracteres hexadecimais, " +
+          "em grupos de quatro — os hífens são opcionais."
+      );
       return;
     }
     const email = manualEmail.trim().toLowerCase();
@@ -205,7 +228,7 @@ export default function Login() {
             ) : (
               <div className="space-y-4">
                 <p className="text-muted-foreground text-sm text-center">
-                  Digite seu email e o código de recuperação ({<span className="font-mono text-xs">XXXX-XXXX-XXXX-XXXX</span>}).
+                  Digite seu email e o código de recuperação. Os hífens são opcionais.
                 </p>
                 <div>
                   <input
@@ -219,7 +242,7 @@ export default function Login() {
                 <div>
                   <input
                     type="text"
-                    placeholder="Código de recuperação (XXXX-XXXX-XXXX-XXXX)"
+                    placeholder="Código de recuperação"
                     value={manualCode}
                     onChange={(e) => setManualCode(e.target.value.toUpperCase())}
                     className="flex h-10 w-full rounded-2xl border border-input bg-white px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 font-mono tracking-wider"

@@ -25,9 +25,11 @@ Mais detalhes sobre o projeto em [clebson-torres.github.io/atendemente.app](http
 ## Funcionalidades
 
 - **Autenticação local** — email + senha com Argon2id, rate limit (5 tentativas/10min)
-- **Recuperação de conta** — código de 8 bytes (64 bits) em hex, formato
-  `XXXX-XXXX-XXXX-XXXX`, guardado como hash SHA-256. É de **uso único**: ao redefinir
-  a senha o código usado é invalidado e um substituto é emitido na tela
+- **Recuperação de conta** — código de 16 bytes (128 bits) em hex, em grupos de
+  quatro, guardado como hash Argon2id. É de **uso único**: ao redefinir a senha o
+  código usado é invalidado e um substituto é emitido na tela. Códigos de 8 bytes
+  emitidos por versões anteriores continuam válidos — a verificação aceita tanto o
+  hash Argon2id novo quanto o SHA-256 antigo
 - **Recuperação manual** — digitar código de recuperação manualmente (fallback sem arquivo `.json`)
 - **Bloqueio por inatividade** — overlay após 5 min, exige senha para desbloquear
 - **Onboarding** — 3 telas (boas-vindas, secret recovery, backup) para novos registros

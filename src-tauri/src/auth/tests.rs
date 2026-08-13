@@ -25,16 +25,25 @@ mod tests {
         assert!(!auth_service::verify_password("senha-errada", &hash).unwrap());
     }
 
+    /// O codigo passou de 8 para 16 bytes — 64 para 128 bits.
+    ///
+    /// 64 bits bastavam enquanto o codigo so servia para redefinir senha, com
+    /// rate limit pela rede. Deixam de bastar quando ele protege uma copia da
+    /// chave de dados, porque o material embrulhado viaja dentro de todo backup
+    /// e o ataque passa a ser offline, com o arquivo em maos.
     #[test]
     fn generate_recovery_secret_format() {
         let secret = auth_service::generate_recovery_secret();
-        assert_eq!(secret.len(), 19);
+        // 32 hex em 8 grupos de 4, separados por hifen.
+        assert_eq!(secret.len(), 39);
         let parts: Vec<&str> = secret.split('-').collect();
-        assert_eq!(parts.len(), 4);
+        assert_eq!(parts.len(), 8);
         for part in &parts {
             assert_eq!(part.len(), 4);
             assert!(part.chars().all(|c| c.is_ascii_hexdigit()));
         }
+        // 16 bytes de entropia.
+        assert_eq!(secret.chars().filter(|c| c.is_ascii_hexdigit()).count(), 32);
     }
 
     #[test]
@@ -44,11 +53,58 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// O hash agora e SALGADO, o oposto do que este teste exigia antes.
+    ///
+    /// Era SHA-256 puro: hashear o mesmo codigo dava sempre o mesmo resultado,
+    /// o que para um segredo curto e uma tabela de busca para quem tiver o
+    /// banco. Determinismo aqui era a fraqueza, nao a garantia.
     #[test]
-    fn hash_recovery_secret_deterministic() {
-        let a = auth_service::hash_recovery_secret("ABCD-EFGH-IJKL-MNOP");
-        let b = auth_service::hash_recovery_secret("ABCD-EFGH-IJKL-MNOP");
-        assert_eq!(a, b);
+    fn hash_recovery_secret_e_salgado_e_verificavel() {
+        let codigo = "ABCD-EF01-2345-6789-ABCD-EF01-2345-6789";
+        let a = auth_service::hash_recovery_secret(codigo);
+        let b = auth_service::hash_recovery_secret(codigo);
+        assert_ne!(a, b, "hashes iguais indicariam ausencia de sal");
+        assert!(a.starts_with("$argon2id$"));
+
+        // Mas os dois verificam o mesmo codigo.
+        assert!(auth_service::verify_recovery_secret(codigo, &a));
+        assert!(auth_service::verify_recovery_secret(codigo, &b));
+        assert!(!auth_service::verify_recovery_secret("OUTRO-CODIGO", &a));
+    }
+
+    /// O usuario pode digitar com ou sem hifens, em qualquer caixa.
+    #[test]
+    fn codigo_de_recuperacao_e_normalizado_na_digitacao() {
+        let codigo = "ABCD-EF01-2345-6789-ABCD-EF01-2345-6789";
+        let hash = auth_service::hash_recovery_secret(codigo);
+
+        assert!(auth_service::verify_recovery_secret(codigo, &hash));
+        assert!(auth_service::verify_recovery_secret(
+            "abcdef0123456789abcdef0123456789",
+            &hash
+        ));
+        assert!(auth_service::verify_recovery_secret(
+            "ABCDEF01 2345 6789 ABCDEF0123456789",
+            &hash
+        ));
+    }
+
+    /// Um codigo emitido pela versao anterior tem hash SHA-256 de 64 hex e
+    /// precisa continuar valendo — o usuario ja o anotou ou guardou em arquivo.
+    #[test]
+    fn aceita_hash_sha256_legado() {
+        use sha2::{Digest, Sha256};
+        let codigo_antigo = "ABCD-EF01-2345-6789";
+        let mut h = Sha256::new();
+        h.update(codigo_antigo.as_bytes());
+        let hash_legado = format!("{:x}", h.finalize());
+        assert_eq!(hash_legado.len(), 64);
+
+        assert!(
+            auth_service::verify_recovery_secret(codigo_antigo, &hash_legado),
+            "codigo emitido pela versao anterior tem de continuar aceito"
+        );
+        assert!(!auth_service::verify_recovery_secret("ABCD-EF01-2345-0000", &hash_legado));
     }
 
     #[test]
