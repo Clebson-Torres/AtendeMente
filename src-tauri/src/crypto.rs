@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::errors::AppError;
 
 pub mod envelope;
+pub mod rotation;
 
 const KEY_VERSION: i32 = 1;
 
@@ -73,6 +74,11 @@ fn derive_key_inner(user_id: &str, pepper: &[u8; 32]) -> Result<[u8; 32], AppErr
 /// autenticacao passaram a usar `unlock_user_crypto`.
 pub fn init_user_crypto(user_id: &str) -> Result<(), AppError> {
     let key = derive_user_key(user_id)?;
+    cache_key(user_id, key)
+}
+
+/// Instala a chave de escrita do usuario, descartando a que estava saindo.
+pub fn cache_key_public(user_id: &str, key: [u8; 32]) -> Result<(), AppError> {
     cache_key(user_id, key)
 }
 

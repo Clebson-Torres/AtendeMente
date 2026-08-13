@@ -206,6 +206,46 @@ pub async fn create_backup_with_password(
     })
 }
 
+/// Confere que um bundle abre e que o conteudo bate com o manifesto, **sem
+/// restaurar nada**.
+///
+/// Existe porque "o arquivo foi gravado" nao e a mesma coisa que "o arquivo
+/// serve". Antes de uma operacao irreversivel — a rotacao de chave — e preciso
+/// provar que a rede de seguranca realmente pega: que a senha abre o bundle, que
+/// o ZIP nao esta truncado e que cada entrada tem o hash que o manifesto diz.
+///
+/// Restaurar para verificar seria pior que nao verificar: `restore_backup`
+/// substitui banco e anexos.
+pub async fn verify_backup_bytes(
+    backup_bytes: &[u8],
+    password: Option<&str>,
+) -> Result<BackupManifest, AppError> {
+    let decrypted = decrypt_bundle(backup_bytes, password)?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(&decrypted))
+        .map_err(|_| AppError::bad_request("Backup invalido ou corrompido."))?;
+    let manifest = read_manifest(&mut archive)?;
+    if !manifest.file_hashes.contains_key(DB_ENTRY) {
+        return Err(AppError::bad_request("Backup sem banco de dados."));
+    }
+    validate_hashes(&mut archive, &manifest)?;
+    Ok(manifest)
+}
+
+/// Desfaz o envelope `ATND || salt || AES-GCM` de um bundle.
+fn decrypt_bundle(backup_bytes: &[u8], password: Option<&str>) -> Result<Vec<u8>, AppError> {
+    if !backup_bytes.starts_with(ATND_MAGIC) {
+        return Ok(backup_bytes.to_vec());
+    }
+    let pass = password.ok_or_else(|| AppError::bad_request("Backup criptografado requer senha."))?;
+    if backup_bytes.len() < ATND_MAGIC.len() + SALT_SIZE + 29 {
+        return Err(AppError::bad_request("Arquivo de backup invalido."));
+    }
+    let salt = &backup_bytes[ATND_MAGIC.len()..ATND_MAGIC.len() + SALT_SIZE];
+    let encrypted = &backup_bytes[ATND_MAGIC.len() + SALT_SIZE..];
+    let key = crypto::derive_key_from_password(pass, salt)?;
+    crypto::decrypt_file(encrypted, &key)
+}
+
 pub async fn restore_backup(
     db: &SqlitePool,
     config: &AppConfig,
@@ -222,21 +262,7 @@ pub async fn restore_backup_with_password(
     backup_bytes: &[u8],
     password: Option<&str>,
 ) -> Result<BackupManifest, AppError> {
-    let decrypted_bytes = if backup_bytes.starts_with(ATND_MAGIC) {
-        if password.is_none() {
-            return Err(AppError::bad_request("Backup criptografado requer senha."));
-        }
-        let pass = password.unwrap();
-        if backup_bytes.len() < ATND_MAGIC.len() + SALT_SIZE + 29 {
-            return Err(AppError::bad_request("Arquivo de backup invalido."));
-        }
-        let salt = &backup_bytes[ATND_MAGIC.len()..ATND_MAGIC.len() + SALT_SIZE];
-        let encrypted = &backup_bytes[ATND_MAGIC.len() + SALT_SIZE..];
-        let key = crypto::derive_key_from_password(pass, salt)?;
-        crypto::decrypt_file(encrypted, &key)?
-    } else {
-        backup_bytes.to_vec()
-    };
+    let decrypted_bytes = decrypt_bundle(backup_bytes, password)?;
 
     let mut archive = zip::ZipArchive::new(Cursor::new(&decrypted_bytes))
         .map_err(|_| AppError::bad_request("Backup invalido ou corrompido."))?;

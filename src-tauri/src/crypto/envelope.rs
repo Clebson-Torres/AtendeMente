@@ -340,6 +340,16 @@ pub async fn store_dek(
     Ok(dek_id)
 }
 
+/// Versao publica de `insert_wrap`, para a rotacao gravar o wrap da chave nova
+/// dentro da mesma transacao em que a DEK e criada.
+pub async fn insert_wrap_pub(
+    tx: &mut sqlx::SqliteConnection,
+    dek_id: &str,
+    w: &WrappedDek,
+) -> Result<(), AppError> {
+    insert_wrap(tx, dek_id, w).await
+}
+
 async fn insert_wrap(
     tx: &mut sqlx::SqliteConnection,
     dek_id: &str,
@@ -532,6 +542,28 @@ pub async fn drop_previous_recovery_wrap(
     .await
     .map_err(|e| AppError::internal(format!("Erro ao limpar envelope anterior: {}", e)))?;
     Ok(())
+}
+
+/// Abre uma DEK especifica — usada para recuperar a chave que esta saindo
+/// quando uma rotacao interrompida e retomada.
+pub async fn unwrap_current_for(
+    _auth_db: &sqlx::SqlitePool,
+    user_id: &str,
+    secret: &str,
+    stored: &StoredDek,
+) -> Result<Dek, AppError> {
+    for slot in [Slot::Password, Slot::Recovery, Slot::RecoveryPrev] {
+        if let Some(w) = stored.wraps.iter().find(|w| w.slot == slot) {
+            if let Ok(dek) = unwrap_dek(w, secret, user_id) {
+                if dek.check() == stored.dek_check {
+                    return Ok(dek);
+                }
+            }
+        }
+    }
+    Err(AppError::unauthorized(
+        "Nao foi possivel abrir a chave anterior com este segredo.",
+    ))
 }
 
 /// Abre a DEK atual do usuario com um segredo, tentando os slots informados.
