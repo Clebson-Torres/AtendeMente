@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { refreshAuthState } from "../lib/auth";
 import { api, type BackupConfigData } from "../lib/api";
 import { Shield, Download, Upload, RefreshCw, Lock, Unlock } from "lucide-react";
 import Button from "../components/ui/Button";
@@ -119,7 +120,12 @@ export default function Settings() {
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       const base64 = btoa(binary);
       await api.backup.restore(base64, password);
-      toast("Backup restaurado. Recarregue a pagina.");
+      // O restore substitui o banco, então os indicadores de segurança do
+      // Dashboard podem ter mudado. Sem esta atualização, a tela continuava
+      // mostrando o estado do login — e um cartão que já estava resolvido
+      // aparecia como pendente, parecendo que o restore desfez a configuração.
+      await refreshAuthState();
+      toast("Backup restaurado.");
     } catch (e: any) {
       toast(e.message || "Erro ao restaurar backup", "error");
     } finally {

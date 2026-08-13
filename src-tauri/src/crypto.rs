@@ -455,6 +455,37 @@ pub async fn reencrypt_all_pii(
 
     let old_key = derive_key_inner(user_id, old_pepper)?;
     let new_key = derive_key_inner(user_id, current_pepper)?;
+    reencrypt_between_keys(db, &old_key, &new_key, user_id).await
+}
+
+/// Chave legada derivada de um pepper especifico.
+pub fn legacy_key_from_pepper(user_id: &str, pepper: &[u8; 32]) -> Result<[u8; 32], AppError> {
+    derive_key_inner(user_id, pepper)
+}
+
+/// Re-cifra o conteudo de um banco de `old_key` para `new_key`.
+///
+/// **Decide por decifra, nao por marcador nem por comparacao de pepper.** Para
+/// cada registro: se ja abre com `new_key`, esta convertido e e ignorado; se abre
+/// com `old_key`, e convertido; se nenhuma abre, aborta a transacao inteira.
+///
+/// Isso torna a operacao idempotente e resistente a interrupcao, e conserta um
+/// bug concreto no restore: a decisao era `old_pepper == current_pepper`, entao
+/// restaurar um backup pre-rotacao **na mesma maquina** nao convertia nada. Numa
+/// conta ja rotacionada — DEK aleatoria, sem chave antiga no chaveiro — os dados
+/// voltavam cifrados com a chave legada e o app nao conseguia le-los. Depois que
+/// o envelope existe, "o pepper mudou?" e a pergunta errada; a pergunta e "isto
+/// abre com a chave com que eu gravo hoje?".
+pub async fn reencrypt_between_keys(
+    db: &sqlx::SqlitePool,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+    user_id: &str,
+) -> Result<ReencryptReport, AppError> {
+    if old_key == new_key {
+        return Ok(ReencryptReport::default());
+    }
+    let (old_key, new_key) = (*old_key, *new_key);
 
     let mut tx = db
         .begin()
@@ -480,7 +511,12 @@ pub async fn reencrypt_all_pii(
             auth_tag: tag.clone(),
             key_version: *kv,
         };
-        // Verify-before-discard: se nao abre com a chave antiga, aborta a
+        // Ja convertido? Nada a fazer — e o que torna a conversao idempotente e
+        // retomavel depois de uma interrupcao.
+        if decrypt_content_with_key(&payload, &new_key).is_ok() {
+            continue;
+        }
+        // Verify-before-discard: se nao abre com nenhuma das duas, aborta a
         // transacao inteira em vez de gravar lixo sobre dado possivelmente bom.
         let plaintext = decrypt_content_with_key(&payload, &old_key).map_err(|_| {
             AppError::bad_request(format!(
@@ -523,6 +559,9 @@ pub async fn reencrypt_all_pii(
             auth_tag: tag.clone(),
             key_version: *kv,
         };
+        if decrypt_content_with_key(&payload, &new_key).is_ok() {
+            continue;
+        }
         let plaintext = decrypt_content_with_key(&payload, &old_key).map_err(|_| {
             AppError::bad_request(format!(
                 "Nao foi possivel decifrar o prontuario {} com a chave do backup. \
@@ -561,21 +600,29 @@ pub async fn reencrypt_all_pii(
 /// em texto claro, porque `collect_files` decifra ao gravar no ZIP. O
 /// passthrough de `decrypt_file` cobre o segundo caso, e a saida sai cifrada com
 /// a chave atual nos dois — inclusive no que entrou em claro.
-pub fn reencrypt_file_bytes(
+/// Converte um anexo de `old_key` para `new_key`.
+///
+/// Decide por decifra, como o resto: se o conteudo ja abre com a chave alvo, e
+/// devolvido sem alteracao. Isso cobre os dois formatos que aparecem em backups
+/// reais — cifrado com a chave antiga (bundle feito sem sessao) e em texto claro
+/// (bundle pos-login, porque `collect_files` decifra ao gravar no ZIP) — e a
+/// saida sai cifrada com a chave alvo nos dois casos.
+pub fn reencrypt_file_between_keys(
     bytes: &[u8],
-    old_pepper: &[u8; 32],
-    user_id: &str,
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
 ) -> Result<Vec<u8>, AppError> {
-    let current_pepper = MASTER_PEPPER
-        .get()
-        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
-    if old_pepper == current_pepper {
+    if old_key == new_key {
         return Ok(bytes.to_vec());
     }
-    let old_key = derive_key_inner(user_id, old_pepper)?;
-    let new_key = derive_key_inner(user_id, current_pepper)?;
-    let plaintext = decrypt_file(bytes, &old_key)?;
-    encrypt_file(&plaintext, &new_key)
+    // Ja esta sob a chave alvo? Nada a fazer. O teste do primeiro byte separa
+    // "abriu porque estava cifrado com esta chave" de "abriu porque o
+    // passthrough devolveu texto claro intacto".
+    if bytes.first() == Some(&0x01) && decrypt_file(bytes, new_key).is_ok() {
+        return Ok(bytes.to_vec());
+    }
+    let plaintext = decrypt_file(bytes, old_key)?;
+    encrypt_file(&plaintext, new_key)
 }
 
 pub fn get_pepper() -> Option<&'static [u8; 32]> {

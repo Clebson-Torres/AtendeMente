@@ -670,6 +670,57 @@ mod tests {
         assert_eq!(deks[0].source, DekSource::Random);
     }
 
+    /// O cenario que apareceu no teste com dados reais.
+    ///
+    /// Sequencia: a conta rotaciona (DEK aleatoria), e depois o usuario restaura
+    /// um backup feito ANTES da rotacao, na MESMA maquina. O conteudo do backup
+    /// esta sob a chave legada; a DEK atual e aleatoria e nao ha chave antiga no
+    /// chaveiro. Antes da correcao o restore nao convertia nada, porque decidia
+    /// comparando `old_pepper == current_pepper` — iguais, na mesma maquina — e os
+    /// dados voltavam ilegiveis para o app.
+    #[tokio::test]
+    async fn restaurar_backup_pre_rotacao_na_mesma_maquina_mantem_os_dados_legiveis() {
+        let uid = "550e8400-e29b-41d4-a716-4466554400c5";
+        let (_dir, user_db, auth_db, config) = cenario(uid).await;
+        crypto::unlock_user_crypto(&auth_db, uid, SENHA, Some(CODIGO)).await.unwrap();
+        criar_paciente(&user_db, uid, "p1", "prontuario antes do backup").await;
+
+        // Backup feito ANTES de rotacionar: conteudo sob a chave legada.
+        let bundle = crate::features::backup::create_backup_with_password(
+            &user_db, &config, uid, Some("SenhaDoBackup#2026"),
+        )
+        .await
+        .unwrap();
+
+        rotate_to_random_dek(&user_db, &auth_db, &config, uid, SENHA, CODIGO).await.unwrap();
+        assert_eq!(
+            ler_paciente(&user_db, uid, "p1").await.unwrap(),
+            "prontuario antes do backup",
+            "apos a rotacao os dados seguem legiveis"
+        );
+
+        // Agora restaura o backup antigo, com a mesma sessao e o mesmo pepper.
+        crate::features::backup::restore_backup_with_password(
+            &user_db, &config, uid, &bundle.bytes, Some("SenhaDoBackup#2026"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            ler_paciente(&user_db, uid, "p1").await.unwrap(),
+            "prontuario antes do backup",
+            "o conteudo restaurado tem de ser convertido para a chave atual"
+        );
+
+        // E numa sessao nova, abrindo a chave pela senha, continua legivel.
+        crypto::clear_user_crypto(uid);
+        crypto::unlock_user_crypto(&auth_db, uid, SENHA, None).await.unwrap();
+        assert_eq!(
+            ler_paciente(&user_db, uid, "p1").await.unwrap(),
+            "prontuario antes do backup"
+        );
+    }
+
     /// Rodar duas vezes seguidas nao pode fazer nada na segunda.
     #[tokio::test]
     async fn rotacao_e_idempotente() {

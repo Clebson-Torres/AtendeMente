@@ -326,7 +326,30 @@ pub async fn restore_backup_with_password(
         None => None,
     };
 
-    if let Some(old_pepper) = old_pepper {
+    // A CHAVE ALVO e a chave com que este app grava dado novo — a DEK do
+    // envelope, quando ha sessao. A decisao de converter e por CHAVE, nunca por
+    // comparacao de pepper.
+    //
+    // A versao anterior fazia `if old_pepper == current_pepper { nao converte }`.
+    // Na mesma maquina os peppers sao iguais, entao restaurar um backup
+    // pre-rotacao numa conta JA ROTACIONADA nao convertia nada: os dados voltavam
+    // cifrados com a chave legada enquanto a DEK atual e aleatoria, e o app
+    // simplesmente nao conseguia le-los. Depois que o envelope existe, "o pepper
+    // mudou?" e a pergunta errada.
+    let chave_alvo = match crypto::load_key(user_id) {
+        Ok(k) => k,
+        // Sem sessao (restore programatico, testes): o alvo e a chave legada
+        // desta maquina, que era o comportamento anterior.
+        Err(_) => crypto::derive_user_key(user_id)?,
+    };
+    let chave_do_backup = match old_pepper {
+        Some(p) => crypto::legacy_key_from_pepper(user_id, &p)?,
+        // Backup sem pepper no manifesto (v1): o conteudo cifrado que houver esta
+        // sob a chave legada desta maquina.
+        None => crypto::derive_user_key(user_id)?,
+    };
+
+    if chave_do_backup != chave_alvo {
         // O banco dentro do backup tem o schema da versao que o gerou, que pode
         // nao ter `patients.key_version` (criada na migration 14). Subir as
         // migrations na copia primeiro deixa o schema atual antes da conversao,
@@ -335,13 +358,14 @@ pub async fn restore_backup_with_password(
         let staged = crate::db::init_database(&staged_url)
             .await
             .map_err(|e| AppError::internal(format!("Erro ao preparar copia do backup: {}", e)))?;
-        let report = crypto::reencrypt_all_pii(&staged, &old_pepper, user_id).await;
+        let report =
+            crypto::reencrypt_between_keys(&staged, &chave_do_backup, &chave_alvo, user_id).await;
         staged.close().await;
         let report = report?;
         if report.patients > 0 || report.session_records > 0 {
             tracing::info!(
-                "[Backup] Pepper do backup difere do atual; re-cifrados {} paciente(s) e {} \
-                 prontuario(s) na copia antes de importar.",
+                "[Backup] Conteudo do backup estava sob outra chave; re-cifrados {} \
+                 paciente(s) e {} prontuario(s) na copia antes de importar.",
                 report.patients,
                 report.session_records
             );
@@ -353,7 +377,12 @@ pub async fn restore_backup_with_password(
     // e a unica forma de nao destruir os anexos existentes por causa de uma
     // falha de conversao.
     let staged_storage = restore_root.join("storage");
-    stage_storage(&mut archive, &manifest, &staged_storage, old_pepper, user_id).await?;
+    let conversao = if chave_do_backup != chave_alvo {
+        Some((chave_do_backup, chave_alvo))
+    } else {
+        None
+    };
+    stage_storage(&mut archive, &manifest, &staged_storage, conversao).await?;
 
     import_database(db, &db_path).await?;
     swap_storage(&staged_storage, &config.storage_dir.join(user_id)).await?;
@@ -711,8 +740,7 @@ async fn stage_storage<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     manifest: &BackupManifest,
     staging_root: &Path,
-    old_pepper: Option<[u8; 32]>,
-    user_id: &str,
+    chaves: Option<([u8; 32], [u8; 32])>,
 ) -> Result<(), AppError> {
     tokio::fs::create_dir_all(staging_root)
         .await
@@ -728,9 +756,9 @@ async fn stage_storage<R: Read + std::io::Seek>(
                 .map_err(|e| AppError::internal(format!("Erro ao criar diretorio de anexo: {}", e)))?;
         }
         let bytes = read_zip_entry(archive, path)?;
-        let bytes = match old_pepper {
-            Some(p) => {
-                let out = crypto::reencrypt_file_bytes(&bytes, &p, user_id).map_err(|_| {
+        let bytes = match chaves {
+            Some((de, para)) => {
+                let out = crypto::reencrypt_file_between_keys(&bytes, &de, &para).map_err(|_| {
                     AppError::bad_request(format!(
                         "Nao foi possivel converter o anexo '{}' para a chave desta maquina. \
                          Nada foi alterado.",

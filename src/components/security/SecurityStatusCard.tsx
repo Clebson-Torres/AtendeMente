@@ -5,6 +5,7 @@ import { format } from "date-fns";
 import Modal from "../ui/Modal";
 import RecoveryCodeSetup from "./RecoveryCodeSetup";
 import DataKeyRotation from "./DataKeyRotation";
+import { refreshAuthState } from "../../lib/auth";
 
 interface Props {
   onboardingCompleted: boolean;
@@ -34,10 +35,10 @@ export default function SecurityStatusCard({
   const [config, setConfig] = useState<BackupConfigData | null>(null);
   const [setupAberto, setSetupAberto] = useState(false);
   const [rotacaoAberta, setRotacaoAberta] = useState(false);
-  const [resolvido, setResolvido] = useState(false);
-  const [rotacionado, setRotacionado] = useState(false);
-  const faltaRotacao = keyRotationPending && !rotacionado;
-  const faltaCodigo = (recoveryWrapMissing && !resolvido) || !onboardingCompleted;
+  // Sem booleano local de "já resolvi": o estado verdadeiro está no servidor, e
+  // guardá-lo aqui fazia o cartão voltar a amarelo em qualquer remontagem.
+  const faltaRotacao = keyRotationPending;
+  const faltaCodigo = recoveryWrapMissing || !onboardingCompleted;
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -140,8 +141,8 @@ export default function SecurityStatusCard({
       >
         <DataKeyRotation
           onDone={() => {
-            setRotacionado(true);
             setRotacaoAberta(false);
+            void refreshAuthState();
           }}
           onCancel={() => setRotacaoAberta(false)}
         />
@@ -155,8 +156,8 @@ export default function SecurityStatusCard({
       >
         <RecoveryCodeSetup
           onDone={() => {
-            setResolvido(true);
             setSetupAberto(false);
+            void refreshAuthState();
           }}
           onCancel={() => setSetupAberto(false)}
         />

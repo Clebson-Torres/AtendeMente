@@ -368,6 +368,19 @@ export async function rotateDataKey(
   });
 }
 
+/**
+ * Reconsulta `/auth/me` e atualiza o contexto de autenticação.
+ *
+ * Depois de resolver uma pendência de segurança, o estado real está no servidor —
+ * não num booleano local do componente. Marcar só o estado local fazia o cartão
+ * ficar verde até a próxima remontagem, e então voltar a amarelo: foi o que
+ * aconteceu ao importar um backup logo após configurar a chave, dando a impressão
+ * de que a configuração havia sido desfeita.
+ */
+export async function refreshAuthState(): Promise<void> {
+  await completeFromStoredToken();
+}
+
 /** Confirma que o código atual foi guardado, descartando o anterior. */
 export async function ackRecoveryCode(): Promise<void> {
   await apiRequest<void>("/auth/recovery-code/ack", undefined, "POST");
