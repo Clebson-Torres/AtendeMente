@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import Button from "./ui/Button";
 import { toast } from "./ui/Toast";
 import { FileText } from "lucide-react";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
 
 interface Props {
   targetRef: React.RefObject<HTMLDivElement | null>;
@@ -32,8 +32,9 @@ export default function ExportPdfButton({ targetRef, filename = "relatorio.pdf" 
 
       pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
       const blob = pdf.output("blob");
-      await downloadFile(blob, filename);
-      toast("PDF exportado.");
+      const r = await downloadFile(blob, filename);
+      const msg = mensagemDeSalvamento(r, "PDF");
+      if (msg) toast(msg);
     } catch (e: any) {
       toast(e.message || "Erro ao exportar PDF", "error");
     } finally {

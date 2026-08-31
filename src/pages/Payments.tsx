@@ -13,7 +13,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatBRL, formatDate, formatTime } from "../lib/format";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
 import { TableSkeleton, CardSkeleton } from "../components/ui/Skeleton";
 import { paymentSchema, type PaymentInput } from "../lib/schemas";
 import { useNavigate } from "react-router-dom";
@@ -61,8 +61,9 @@ export default function Payments() {
   async function handleExportCsv() {
     try {
       const blob = await api.exports.paymentsCsv(month, year);
-      await downloadFile(blob, `financeiro-${year}-${String(month).padStart(2, "0")}.csv`);
-      toast("CSV exportado.");
+      const r = await downloadFile(blob, `financeiro-${year}-${String(month).padStart(2, "0")}.csv`);
+      const msg = mensagemDeSalvamento(r, "CSV do financeiro");
+      if (msg) toast(msg);
     } catch (e: any) {
       toast(e.message, "error");
     }

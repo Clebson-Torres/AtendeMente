@@ -11,7 +11,7 @@ import StatusBadge from "../components/ui/StatusBadge";
 import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { formatTime, toLocalDatetimeString } from "../lib/format";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
 import { CalendarSkeleton } from "../components/ui/Skeleton";
 import { appointmentSchema, type AppointmentInput } from "../lib/schemas";
 import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat, Download, Filter } from "lucide-react";
@@ -126,8 +126,9 @@ export default function Appointments() {
   async function handleExportCsv() {
     try {
       const blob = await api.exports.appointmentsCsv(month + 1, year);
-      await downloadFile(blob, `agenda-${year}-${String(month + 1).padStart(2, "0")}.csv`);
-      toast("CSV exportado.");
+      const r = await downloadFile(blob, `agenda-${year}-${String(month + 1).padStart(2, "0")}.csv`);
+      const msg = mensagemDeSalvamento(r, "CSV da agenda");
+      if (msg) toast(msg);
     } catch (e: any) {
       toast(e.message, "error");
     }

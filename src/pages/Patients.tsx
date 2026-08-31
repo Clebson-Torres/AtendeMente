@@ -15,7 +15,7 @@ import FieldError from "../components/ui/FieldError";
 import { toast } from "../components/ui/Toast";
 import { patientSchema, type PatientInput } from "../lib/schemas";
 import { formatDate } from "../lib/format";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
 import { TableSkeleton } from "../components/ui/Skeleton";
 import { Upload, UsersRound, Plus, Search, FileSpreadsheet, Download } from "lucide-react";
 import ImportPatientsModal from "../components/ImportPatientsModal";
@@ -78,8 +78,9 @@ export default function Patients() {
   async function handleExportCsv() {
     try {
       const blob = await api.exports.patientsCsv();
-      await downloadFile(blob, "pacientes.csv");
-      toast("CSV exportado.");
+      const r = await downloadFile(blob, "pacientes.csv");
+      const msg = mensagemDeSalvamento(r, "CSV de pacientes");
+      if (msg) toast(msg);
     } catch (e: any) {
       toast(e.message, "error");
     }

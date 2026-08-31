@@ -4,7 +4,7 @@ import { Shield, Download, Upload, RefreshCw, Lock, Unlock } from "lucide-react"
 import Button from "../components/ui/Button";
 import Modal from "../components/ui/Modal";
 import Select from "../components/ui/Select";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
 import { toast } from "../components/ui/Toast";
 
 export default function Settings() {
@@ -65,10 +65,11 @@ export default function Settings() {
     try {
       const password = pw;
       const { blob, fileName } = await api.backup.create(password);
-      await downloadFile(blob, fileName);
+      const r = await downloadFile(blob, fileName);
       const c = await api.backup.getConfig();
       setConfig(c);
-      toast("Backup baixado com sucesso.");
+      const msg = mensagemDeSalvamento(r, "Backup");
+      if (msg) toast(msg);
     } catch (e: any) {
       toast(e.message || "Erro ao criar backup", "error");
     } finally {

@@ -9,25 +9,60 @@ use atendemente_lib::{run_server, AppState};
 use tokio::sync::RwLock;
 use tauri_plugin_dialog::DialogExt;
 
+/// Abre o dialogo nativo "salvar como" e grava os bytes onde a pessoa escolher.
+///
+/// Substitui o caminho web (`<a download>` + `showSaveFilePicker`), que na pratica
+/// nao funcionava no app instalado: `showSaveFilePicker` so existe em navegadores
+/// Chromium, entao no WebKitGTK do Linux — e no WKWebView do macOS — a chamada caia
+/// no fallback do link, que grava sem perguntar nada e sem dizer onde. A tela
+/// anunciava "baixado com sucesso" e a pessoa ficava sem saber onde o arquivo foi
+/// parar. Para a chave de recuperacao isso e grave: e o unico caminho de volta a
+/// conta, e ela sumia num diretorio qualquer.
+///
+/// Devolve o caminho gravado, para que a interface possa mostra-lo.
+/// `async` de proposito, e com o dialogo numa thread de bloqueio.
+///
+/// `blocking_save_file` trava se rodar na thread principal: ele bloqueia esperando a
+/// escolha, e quem processa os eventos do dialogo e justamente o event loop daquela
+/// thread — deadlock, sem erro e sem janela. Comandos Tauri **sincronos** rodam na
+/// main thread, entao a versao anterior deste comando (`save_recovery_file`) nunca
+/// poderia ter funcionado; talvez por isso o frontend jamais a chamasse.
 #[tauri::command]
-fn save_recovery_file(app: tauri::AppHandle, filename: String, content: String) -> Result<String, String> {
-    let path = app
-        .dialog()
-        .file()
-        .add_filter("Recovery", &["json"])
-        .set_file_name(&filename)
-        .blocking_save_file();
+async fn cmd_save_file(
+    app: tauri::AppHandle,
+    filename: String,
+    content_base64: String,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
-    match path {
-        Some(path) => {
-            let p = path.into_path()
-                .map_err(|_| "Caminho inválido.".to_string())?;
-            std::fs::write(&p, &content)
-                .map_err(|e| format!("Erro ao salvar arquivo: {}", e))?;
-            Ok(p.to_string_lossy().to_string())
+    let dados = BASE64
+        .decode(&content_base64)
+        .map_err(|e| format!("Conteudo invalido: {}", e))?;
+
+    let nome = filename.clone();
+    let escolhido = tauri::async_runtime::spawn_blocking(move || {
+        let extensao = std::path::Path::new(&nome)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut dialogo = app.dialog().file().set_file_name(&nome);
+        if !extensao.is_empty() {
+            dialogo = dialogo.add_filter(extensao.to_uppercase(), &[extensao.as_str()]);
         }
-        None => Err("Salvamento cancelado.".to_string()),
-    }
+        dialogo.blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Erro ao abrir o seletor de arquivo: {}", e))?
+    .ok_or_else(|| "cancelado".to_string())?;
+
+    let caminho = escolhido
+        .into_path()
+        .map_err(|_| "Caminho invalido.".to_string())?;
+
+    std::fs::write(&caminho, &dados).map_err(|e| format!("Erro ao salvar arquivo: {}", e))?;
+    Ok(caminho.to_string_lossy().to_string())
 }
 
 #[tokio::main]
@@ -58,7 +93,7 @@ async fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
-            save_recovery_file,
+            cmd_save_file,
             atendemente_lib::commands::cmd_export_patient_zip,
             atendemente_lib::commands::cmd_list_files_by_appointment,
             atendemente_lib::commands::cmd_download_file,

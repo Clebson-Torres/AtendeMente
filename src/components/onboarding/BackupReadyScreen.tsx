@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Database, SkipForward, CheckCircle2, Lock } from "lucide-react";
 import { api } from "../../lib/api";
 import { toast } from "../ui/Toast";
-import { downloadFile } from "../../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../../lib/utils";
 
 interface Props {
   onComplete: () => void;
@@ -25,8 +25,9 @@ export default function BackupReadyScreen({ onComplete, onSkip }: Props) {
     setBackupError("");
     try {
       const { blob, fileName } = await api.backup.create(backupPassword);
-      downloadFile(blob, fileName);
-      toast("Backup criado com sucesso!", "success");
+      const r = await downloadFile(blob, fileName);
+      const msg = mensagemDeSalvamento(r, "Backup");
+      if (msg) toast(msg, "success");
       setShowPasswordModal(false);
       setChoiceMade(true);
     } catch (err: any) {

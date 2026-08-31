@@ -4,7 +4,8 @@ import { api, type Patient, type CalendarEvent } from "../lib/api";
 import Button from "../components/ui/Button";
 import StatusBadge from "../components/ui/StatusBadge";
 import { formatDate, formatTime } from "../lib/format";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
+import { toast } from "../components/ui/Toast";
 import { DetailSkeleton } from "../components/ui/Skeleton";
 import { ArrowLeft, User, Phone, Calendar, FileText, Download, Video } from "lucide-react";
 
@@ -42,7 +43,9 @@ export default function PatientDetail() {
     try {
       const blob = await api.exports.patient(id);
       if (blob) {
-        await downloadFile(blob, `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`);
+        const r = await downloadFile(blob, `paciente-${patient?.full_name.replace(/\s+/g, "_")}.zip`);
+        const msg = mensagemDeSalvamento(r, "Dossiê do paciente");
+        if (msg) toast(msg);
       }
     } catch (e: any) {
       setError(e.message || "Erro ao exportar");

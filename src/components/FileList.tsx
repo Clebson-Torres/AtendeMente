@@ -3,7 +3,8 @@ import { api, type RecordFile } from "../lib/api";
 import Button from "./ui/Button";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import { Download, Trash2, FileText, FileImage, FileIcon } from "lucide-react";
-import { downloadFile } from "../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../lib/utils";
+import { toast } from "./ui/Toast";
 
 interface Props {
   appointmentId: string;
@@ -49,9 +50,12 @@ export default function FileList({ appointmentId, onRefresh }: Props) {
   async function handleDownload(file: RecordFile) {
     try {
       const { blob, fileName } = await api.files.download(file.id);
-      await downloadFile(blob, fileName);
+      const r = await downloadFile(blob, fileName);
+      const msg = mensagemDeSalvamento(r, "Anexo");
+      if (msg) toast(msg);
     } catch (e: any) {
       console.error("Download failed:", e);
+      toast(e?.message || "Erro ao baixar o anexo", "error");
     }
   }
 

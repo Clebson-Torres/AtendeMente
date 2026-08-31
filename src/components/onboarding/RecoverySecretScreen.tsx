@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ShieldAlert, Copy, Check, Download } from "lucide-react";
 import { toast } from "../ui/Toast";
-import { downloadFile } from "../../lib/utils";
+import { downloadFile, mensagemDeSalvamento } from "../../lib/utils";
 
 interface Props {
   userId: string;
@@ -24,11 +24,19 @@ export default function RecoverySecretScreen({ userId, secret, onNext }: Props) 
     }
   }
 
-  function handleDownload() {
+  async function handleDownload() {
     const content = JSON.stringify({ version: 1, user_id: userId, recovery_secret: secret }, null, 2);
     const blob = new Blob([content], { type: "application/json" });
-    downloadFile(blob, `atendemente-recovery-${userId.slice(0, 8)}.json`);
-    toast("Arquivo baixado!", "success");
+    try {
+      const r = await downloadFile(blob, `atendemente-recovery-${userId.slice(0, 8)}.json`);
+      // Antes isto anunciava "Arquivo baixado!" mesmo quando nada era salvo, e
+      // nunca dizia onde. Sem o caminho, a chave se perde num diretório qualquer —
+      // e ela é o único jeito de recuperar a conta.
+      const msg = mensagemDeSalvamento(r, "Arquivo de recuperação");
+      if (msg) toast(msg, "success");
+    } catch (e: any) {
+      toast(e?.message || "Erro ao salvar o arquivo de recuperação", "error");
+    }
   }
 
   return (
