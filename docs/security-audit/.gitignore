@@ -1,0 +1,3 @@
+# Ambiente do gerador do relatório — recriável, ver README.md
+.venv/
+__pycache__/
