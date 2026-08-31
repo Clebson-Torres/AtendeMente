@@ -27,8 +27,13 @@ src-tauri/src/db/auth_migrations/*.sql  -text
 # regenerados. Ver src-tauri/tests/fixtures/README.md.
 *.atendemente                                    binary
 
-# Fontes do bundle. Marcadas explicitamente pelo mesmo motivo das migrations: o
-# core.autocrlf do Git para Windows reescreve o que ele acha que e texto, e um
-# .woff2 corrompido no checkout so aparece como tipografia quebrada no app.
+# Fontes e icones do bundle. Marcados explicitamente pelo mesmo motivo das
+# migrations: o core.autocrlf do Git para Windows reescreve o que ele acha que e
+# texto, e um binario corrompido no checkout so aparece la na frente — como
+# tipografia quebrada, ou um icone que o instalador recusa.
 *.woff2                                          binary
+*.png                                            binary
+*.ico                                            binary
+*.icns                                           binary
+*.jpeg                                           binary
 src-tauri/tests/fixtures/*.expected.json         -text
