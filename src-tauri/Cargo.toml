@@ -48,6 +48,7 @@ base64 = "0.22"
 zip = "2"
 csv = "1"
 hkdf = "0.12"
+hmac = "0.12"
 sha2 = "0.10"
 toml = "0.8"
 validator = { version = "0.19", features = ["derive"] }

@@ -6,7 +6,9 @@ use rand::RngCore;
 
 const KEYCHAIN_SERVICE: &str = "atendemente";
 const KEYCHAIN_ACCOUNT: &str = "master_pepper";
-const KEYCHAIN_BACKUP_PASSWORD: &str = "backup_password";
+/// Conta legada, de quando a senha do backup era uma so para a maquina inteira.
+/// Ainda lida — nunca escrita — para migrar instalacoes existentes.
+const KEYCHAIN_BACKUP_PASSWORD_LEGADO: &str = "backup_password";
 pub const MAX_UPLOAD_SIZE_BYTES: u64 = 20 * 1024 * 1024;
 /// Matches the minimum the Settings UI enforces for manual backups.
 pub const MIN_AUTO_BACKUP_PASSWORD_LEN: usize = 12;
@@ -85,30 +87,90 @@ pub async fn clear_legacy_mobile_access_flag() {
 // wiped. The user must be able to restore on a new machine, which means they
 // have to know the secret.
 
-/// The password used to encrypt scheduled backups, if the user configured one.
-pub fn load_backup_password() -> Option<String> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
-        .filter(|p| !p.is_empty())
+/// Conta do cofre onde fica a senha de backup **deste** usuario.
+///
+/// Antes era uma conta fixa para a maquina inteira, e as rotas de
+/// `/api/backup/password` autenticavam o chamador so para descartar o `user.id`.
+/// Numa instalacao com mais de uma conta isso significava tres coisas: o usuario B
+/// passava a conhecer a senha que cifra os backups de A, um `DELETE` de B parava os
+/// backups de A em silencio, e os dois nunca conseguiam manter senhas distintas.
+pub fn backup_password_account(user_id: &str) -> String {
+    format!("{}:{}", KEYCHAIN_BACKUP_PASSWORD_LEGADO, user_id)
 }
 
-pub fn save_backup_password(password: &str) -> Result<(), String> {
+/// The password used to encrypt scheduled backups, if the user configured one.
+pub fn load_backup_password(user_id: &str) -> Option<String> {
+    ler_entrada(&backup_password_account(user_id))
+}
+
+pub fn save_backup_password(user_id: &str, password: &str) -> Result<(), String> {
     if password.chars().count() < MIN_AUTO_BACKUP_PASSWORD_LEN {
         return Err(format!(
             "A senha dos backups automaticos deve ter no minimo {} caracteres.",
             MIN_AUTO_BACKUP_PASSWORD_LEN
         ));
     }
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
+    escrever_entrada(&backup_password_account(user_id), password)
+}
+
+pub fn delete_backup_password(user_id: &str) -> Result<(), String> {
+    apagar_entrada(&backup_password_account(user_id))
+}
+
+/// Adota a senha da conta legada, uma vez, no boot.
+///
+/// Sem isso, quem ja tinha backup automatico configurado perderia a senha em
+/// silencio: o agendador apenas registra um `warn!` e segue, `last_backup_at` nao e
+/// tocado, e a tela continua exibindo a frequencia configurada — a pessoa so
+/// descobriria quando precisasse restaurar.
+///
+/// Migra somente quando ha **uma** conta na instalacao. Com varias, a senha legada e
+/// ambigua: nao ha como saber de quem ela e, e adota-la para todas reproduziria
+/// exatamente o problema que esta correcao veio fechar. Nesse caso cada usuaria
+/// redefine a sua em Configuracoes.
+pub fn migrar_senha_backup_legada(usuarios: &[String]) {
+    let Some(senha) = ler_entrada(KEYCHAIN_BACKUP_PASSWORD_LEGADO) else {
+        return;
+    };
+
+    let [user_id] = usuarios else {
+        tracing::warn!(
+            "[Config] Existe uma senha de backup no formato antigo, mas a instalacao tem \
+             {} contas — nao da para saber de quem ela e. Cada usuaria precisa redefinir \
+             a senha dos backups automaticos em Configuracoes.",
+            usuarios.len()
+        );
+        return;
+    };
+
+    match escrever_entrada(&backup_password_account(user_id), &senha) {
+        Ok(()) => {
+            // So apagar a legada depois de a nova estar gravada: se a escrita falhar,
+            // e melhor manter o estado antigo funcionando do que ficar sem nenhuma.
+            let _ = apagar_entrada(KEYCHAIN_BACKUP_PASSWORD_LEGADO);
+            tracing::info!("[Config] Senha de backup migrada para a conta do usuario.");
+        }
+        Err(e) => tracing::warn!("[Config] Falha ao migrar a senha de backup legada: {}", e),
+    }
+}
+
+fn ler_entrada(conta: &str) -> Option<String> {
+    Entry::new(KEYCHAIN_SERVICE, conta)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .filter(|p| !p.is_empty())
+}
+
+fn escrever_entrada(conta: &str, valor: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, conta)
         .map_err(|e| format!("Cofre de credenciais indisponivel: {}", e))?;
     entry
-        .set_password(password)
+        .set_password(valor)
         .map_err(|e| format!("Erro ao guardar a senha no cofre: {}", e))
 }
 
-pub fn delete_backup_password() -> Result<(), String> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_BACKUP_PASSWORD)
+fn apagar_entrada(conta: &str) -> Result<(), String> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, conta)
         .map_err(|e| format!("Cofre de credenciais indisponivel: {}", e))?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
@@ -154,6 +216,19 @@ fn load_or_generate_pepper() -> [u8; 32] {
     // generate a new one.
     if let Ok(raw) = std::env::var("MASTER_PEPPER") {
         if let Ok(decoded) = decode_hex_or_base64(&raw) {
+            // Um pepper degenerado (todos os bytes iguais) e valido em forma mas nao
+            // protege nada, e a falha e silenciosa: tudo funciona, so nao esta cifrado
+            // de verdade. Barrar aqui vale para todo processo — este caminho so e
+            // alcancado por `AppConfig::from_env()`, ou seja, pelos binarios; os testes
+            // constroem `AppConfig` a mao e nao passam por aqui.
+            if is_degenerate_pepper(&decoded) {
+                panic!(
+                    "MASTER_PEPPER tem todos os 32 bytes iguais. Um valor assim nao vem \
+                     de um gerador seguro e nao protege os dados cifrados — provavelmente \
+                     e um exemplo copiado de documentacao. Gere um pepper real ou remova a \
+                     variavel para o app criar um."
+                );
+            }
             tracing::warn!(
                 "[Config] Usando MASTER_PEPPER do ambiente (apenas neste processo; \
                  o pepper armazenado no cofre nao foi alterado)."
@@ -249,13 +324,28 @@ fn decode_hex_or_base64(raw: &str) -> Result<[u8; 32], ()> {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-    if s.len() % 2 != 0 {
+    // O valor chega de `MASTER_PEPPER` ou do config.toml, entao pode ser qualquer
+    // coisa. Rejeitar tudo que nao seja um numero par de digitos hex ASCII **antes**
+    // de fatiar: `&s[i..i + 2]` entra em panico numa fronteira de caractere
+    // multi-byte, e "çç" tem comprimento par em bytes.
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 || !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
         return Err(());
     }
     (0..s.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
         .collect()
+}
+
+/// Um pepper com todos os bytes iguais nao veio de um CSPRNG.
+///
+/// `0000...0` e o valor usado pelo smoke test do CI contra bancos descartaveis, e e
+/// exatamente o tipo de literal que alguem copia da documentacao para "testar" e
+/// deixa ficar. Como chave-raiz de derivacao ele nao protege nada, e a falha e
+/// silenciosa: tudo funciona, so nao esta cifrado de verdade.
+fn is_degenerate_pepper(pepper: &[u8; 32]) -> bool {
+    pepper.iter().all(|b| *b == pepper[0])
 }
 
 impl AppConfig {
@@ -352,7 +442,7 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_hex_or_base64, AppConfig, ConfigFile};
+    use super::{backup_password_account, decode_hex_or_base64, is_degenerate_pepper, AppConfig, ConfigFile};
     use std::path::PathBuf;
 
     fn config_with_data_dir(data_dir: PathBuf) -> AppConfig {
@@ -393,6 +483,39 @@ mod tests {
         let a = cfg.user_db_path("550e8400-e29b-41d4-a716-44665544000a");
         let b = cfg.user_db_path("550e8400-e29b-41d4-a716-44665544000b");
         assert_ne!(a, b);
+    }
+
+    /// Um pepper de bytes repetidos passa por `decode_hex_or_base64` — tem a forma
+    /// certa — mas nao vem de um CSPRNG. Como chave-raiz de derivacao ele nao
+    /// protege nada, e nada no comportamento do app denuncia isso.
+    #[test]
+    fn detects_degenerate_peppers() {
+        assert!(is_degenerate_pepper(&[0u8; 32]), "todos zero");
+        assert!(is_degenerate_pepper(&[0xffu8; 32]), "todos 0xff");
+        assert!(is_degenerate_pepper(&[0x42u8; 32]), "todos iguais");
+
+        let mut quase = [7u8; 32];
+        quase[31] = 8;
+        assert!(!is_degenerate_pepper(&quase), "um byte diferente ja basta");
+
+        let real = [
+            0x9a, 0x1f, 0x3c, 0x77, 0xd2, 0x05, 0xbe, 0x41, 0x68, 0x33, 0xaf, 0x0e,
+            0x5d, 0xc9, 0x72, 0x18, 0x84, 0x6b, 0xf0, 0x2a, 0x37, 0xe5, 0x11, 0xcd,
+            0x60, 0x99, 0x4d, 0xb7, 0x28, 0x0c, 0xa3, 0x56,
+        ];
+        assert!(!is_degenerate_pepper(&real));
+    }
+
+    /// `hex_decode` fatiava `&s[i..i + 2]` sem checar fronteira de caractere. "çç"
+    /// tem 4 bytes — comprimento par — e derrubava o processo em vez de devolver
+    /// erro. O valor vem de `MASTER_PEPPER` ou do config.toml, ou seja, de fora.
+    #[test]
+    fn hex_decode_rejects_junk_without_panicking() {
+        assert!(super::hex_decode("çç").is_err(), "multi-byte de comprimento par");
+        assert!(super::hex_decode("abc").is_err(), "comprimento impar");
+        assert!(super::hex_decode("zz").is_err(), "digito nao-hex");
+        assert!(super::hex_decode("").unwrap().is_empty());
+        assert_eq!(super::hex_decode("00ff").unwrap(), vec![0x00, 0xff]);
     }
 
     #[test]
@@ -457,6 +580,33 @@ mod tests {
         assert!(
             written.contains("q83nH1cS0Zk9vYt7pXeR2mLbA5wJ4gQfN6uD8iO0sT8="),
             "o pepper deve sobreviver a limpeza da flag; escrito: {written}"
+        );
+    }
+
+    /// A senha dos backups automaticos vivia numa conta fixa do cofre, e as tres
+    /// rotas que a gerenciam autenticavam o chamador so para descartar o `user.id`.
+    /// Com duas contas na maquina, quem gravasse por ultimo vencia — e passava a
+    /// conhecer a senha que cifra os backups da outra pessoa.
+    #[test]
+    fn backup_password_accounts_are_scoped_per_user() {
+        let a = backup_password_account("550e8400-e29b-41d4-a716-44665544000a");
+        let b = backup_password_account("550e8400-e29b-41d4-a716-44665544000b");
+
+        assert_ne!(a, b, "usuarios diferentes nao podem compartilhar a entrada");
+        assert!(a.contains("550e8400-e29b-41d4-a716-44665544000a"));
+        assert_ne!(
+            a, "backup_password",
+            "a conta nao pode colidir com a legada, senao a migracao se apaga"
+        );
+    }
+
+    #[test]
+    fn backup_password_account_is_stable() {
+        let uid = "550e8400-e29b-41d4-a716-446655440001";
+        assert_eq!(
+            backup_password_account(uid),
+            backup_password_account(uid),
+            "o nome da conta precisa ser deterministico, ou a senha some no proximo boot"
         );
     }
 }

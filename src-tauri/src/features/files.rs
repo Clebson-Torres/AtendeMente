@@ -342,6 +342,18 @@ pub async fn download_file(
     let data = crypto::decrypt_file(&raw, &key)
         .map_err(|e| AppError::internal(format!("Erro ao descriptografar: {}", e)))?;
 
+    // O `mime_type` da linha e o que o cliente declarou em `create_upload_session`,
+    // sem nenhuma validacao. Quem confere declaracao contra os magic bytes reais e
+    // `confirm_upload` — e o download nao exige confirmacao: basta `deleted_at IS
+    // NULL`. Uma sessao criada e escrita, mas nunca confirmada, era servida com um
+    // Content-Type escolhido pelo chamador.
+    //
+    // Derivar o tipo do conteudo ja decifrado fecha isso sem migration e sem mudar a
+    // listagem: o cabecalho passa a descrever o que o arquivo e, nao o que alguem
+    // disse que ele era.
+    let mut file = file;
+    file.mime_type = sniff_mime(&data);
+
     audit::write_audit_log(
         db,
         user_id,
@@ -358,6 +370,29 @@ pub async fn download_file(
     .await?;
 
     Ok((file, data))
+}
+
+/// Tipo MIME do conteudo real, restrito ao que o upload aceita.
+///
+/// `infer` reconhece dezenas de formatos; devolver qualquer um deles reintroduziria
+/// a confianca no arquivo. A whitelist e a mesma de `validate_file_content`, e o que
+/// nao estiver nela sai como binario opaco.
+fn sniff_mime(data: &[u8]) -> String {
+    const PERMITIDOS: &[&str] = &[
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+
+    match infer::get(data).map(|k| k.mime_type()) {
+        // Um .docx e um ZIP; `infer` so enxerga o container.
+        Some("application/zip") => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        Some(m) if PERMITIDOS.contains(&m) => m.to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
 }
 
 pub async fn list_files_by_appointment(
@@ -891,5 +926,86 @@ mod tests {
         assert_eq!(file.original_name, "laudo_clinico_.pdf");
         assert!(!storage_path.contains("laudo"));
         assert!(storage_path.ends_with(".pdf"));
+    }
+
+    /// O Content-Type do download vinha do MIME declarado no upload.
+    ///
+    /// Quem confere declaracao contra conteudo e `confirm_upload`, e o download nunca
+    /// exigiu confirmacao. Um registro criado com um MIME mentiroso e nunca
+    /// confirmado era servido com o cabecalho que o chamador escolheu.
+    #[tokio::test]
+    async fn download_derives_content_type_from_the_bytes_not_the_declared_mime() {
+        let (tmp, db) = test_db().await;
+        let config = test_config(&tmp);
+        let user_id = "550e8400-e29b-41d4-a716-446655440001";
+        let patient_id = "550e8400-e29b-41d4-a716-446655440002";
+        let appt_id = "550e8400-e29b-41d4-a716-446655440003";
+        seed_data(&db, user_id, patient_id, appt_id).await;
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+
+        let input = FileUploadRequest {
+            appointment_id: appt_id.into(),
+            patient_id: patient_id.into(),
+            payment_id: None,
+            kind: "session_attachment".into(),
+            file_name: "laudo.pdf".into(),
+            file_size: 8,
+            // A declaracao e livre; o conteudo abaixo nao e um PDF.
+            mime_type: "text/html".into(),
+        };
+
+        let (file_id, _) = create_upload_session(&db, &config, user_id, &input)
+            .await
+            .unwrap();
+        write_upload_content(&db, user_id, &file_id, b"<h1>oi</h1>")
+            .await
+            .unwrap();
+
+        // Sem passar por `confirm_upload`, que e onde os magic bytes sao checados.
+        let (file, _dados) = download_file(&db, user_id, &file_id).await.unwrap();
+
+        assert_ne!(
+            file.mime_type, "text/html",
+            "o cabecalho nao pode repetir a declaracao do chamador"
+        );
+        assert_eq!(
+            file.mime_type, "application/octet-stream",
+            "conteudo que nao bate com nenhum tipo permitido sai como binario opaco"
+        );
+    }
+
+    /// O contrapeso do teste acima: um PDF de verdade tem de continuar sendo servido
+    /// como PDF, senao a correcao quebra o caso normal.
+    #[tokio::test]
+    async fn download_keeps_the_real_type_for_a_valid_attachment() {
+        let (tmp, db) = test_db().await;
+        let config = test_config(&tmp);
+        let user_id = "550e8400-e29b-41d4-a716-446655440001";
+        let patient_id = "550e8400-e29b-41d4-a716-446655440002";
+        let appt_id = "550e8400-e29b-41d4-a716-446655440003";
+        seed_data(&db, user_id, patient_id, appt_id).await;
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n";
+        let input = FileUploadRequest {
+            appointment_id: appt_id.into(),
+            patient_id: patient_id.into(),
+            payment_id: None,
+            kind: "session_attachment".into(),
+            file_name: "laudo.pdf".into(),
+            file_size: pdf.len() as i64,
+            mime_type: "application/pdf".into(),
+        };
+
+        let (file_id, _) = create_upload_session(&db, &config, user_id, &input)
+            .await
+            .unwrap();
+        write_upload_content(&db, user_id, &file_id, pdf).await.unwrap();
+
+        let (file, dados) = download_file(&db, user_id, &file_id).await.unwrap();
+        assert_eq!(file.mime_type, "application/pdf");
+        assert_eq!(dados, pdf);
     }
 }

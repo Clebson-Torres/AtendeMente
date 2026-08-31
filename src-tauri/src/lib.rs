@@ -234,7 +234,7 @@ fn start_backup_scheduler(state: Arc<AppState>) {
                     // every patient record in a file that gets copied to pen drives
                     // and cloud-synced folders, so it is encrypted or not written
                     // at all — never plaintext.
-                    let Some(password) = config::load_backup_password() else {
+                    let Some(password) = config::load_backup_password(user_id) else {
                         tracing::warn!(
                             "[BackupScheduler] Backup automatico ativo para {} mas sem senha \
                              configurada; nada foi gravado. Defina a senha em Configuracoes.",
@@ -289,6 +289,21 @@ fn start_backup_scheduler(state: Arc<AppState>) {
 pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Option<std::sync::mpsc::Sender<()>>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Undo the firewall hole left by the removed "mobile access" feature.
     cleanup_legacy_mobile_access().await;
+
+    // A senha dos backups automaticos passou a ser por usuario. Adotar a entrada
+    // antiga aqui, uma vez, e o que impede que quem ja tinha backup configurado
+    // perca a senha em silencio — o agendador so emitiria um `warn!` e seguiria.
+    match sqlx::query_scalar::<_, String>("SELECT id FROM auth_users")
+        .fetch_all(&state.auth_db)
+        .await
+    {
+        Ok(usuarios) => config::migrar_senha_backup_legada(&usuarios),
+        Err(e) => tracing::warn!(
+            "[Boot] Falha ao listar usuarios para migrar a senha de backup: {}",
+            e
+        ),
+    }
+
     start_backup_scheduler(state.clone());
     let auth_router = crate::auth::create_auth_router(state.clone());
     let api_routes = api::routes::create_router(state.clone());
@@ -473,6 +488,8 @@ mod scheduled_backup_tests {
                 salt: None,
                 pepper: None,
                 pepper_fingerprint: None,
+                envelope: None,
+                envelope_salt: None,
             },
             encrypted,
         }

@@ -56,9 +56,22 @@ const config: Config = {
         soft: "0 18px 48px rgba(17, 24, 39, 0.08)",
       },
       fontFamily: {
-        sans: ["Manrope", "sans-serif"],
-        display: ["Newsreader", "serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "monospace"],
+        // As duas familias vem do bundle (src/assets/fonts). A pilha de fallback e
+        // real, nao decorativa: se um .woff2 faltar no build, o app continua legivel
+        // com a fonte do sistema em vez de cair no serif padrao do navegador.
+        sans: [
+          "Manrope",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "Helvetica Neue",
+          "Arial",
+          "sans-serif",
+        ],
+        display: ["Newsreader", "ui-serif", "Georgia", "Cambria", "Times New Roman", "serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
       keyframes: {
         "fade-in": {

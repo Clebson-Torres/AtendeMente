@@ -15,6 +15,9 @@ use crate::db::models::{
     UpdateAppointmentInput, UpdatePatientInput, UpsertPaymentInput,
 };
 use crate::errors::{ActionResponse, AppError, PaginatedData};
+// `AppError::Validation` tem `#[from]`, entao `input.validate()?` ja vira 422 com o
+// mapa de campos. O trait precisa estar em escopo para o metodo existir.
+use validator::Validate;
 use crate::features;
 use crate::AppState;
 
@@ -187,11 +190,11 @@ async fn get_backup_password_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ActionResponse<BackupPasswordStatus>>, AppError> {
-    let _user = get_authenticated_user(&headers, &state).await?;
+    let user = get_authenticated_user(&headers, &state).await?;
     Ok(Json(ActionResponse::success(
         "",
         BackupPasswordStatus {
-            configured: crate::config::load_backup_password().is_some(),
+            configured: crate::config::load_backup_password(&user.id).is_some(),
         },
     )))
 }
@@ -201,8 +204,9 @@ async fn set_backup_password(
     headers: HeaderMap,
     Json(input): Json<BackupPasswordInput>,
 ) -> Result<Json<ActionResponse<()>>, AppError> {
-    let _user = get_authenticated_user(&headers, &state).await?;
-    crate::config::save_backup_password(&input.password).map_err(AppError::bad_request)?;
+    let user = get_authenticated_user(&headers, &state).await?;
+    crate::config::save_backup_password(&user.id, &input.password)
+        .map_err(AppError::bad_request)?;
     Ok(Json(ActionResponse::<()>::success_empty(
         "Senha dos backups automaticos salva.",
     )))
@@ -212,8 +216,8 @@ async fn clear_backup_password(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<ActionResponse<()>>, AppError> {
-    let _user = get_authenticated_user(&headers, &state).await?;
-    crate::config::delete_backup_password().map_err(AppError::internal)?;
+    let user = get_authenticated_user(&headers, &state).await?;
+    crate::config::delete_backup_password(&user.id).map_err(AppError::internal)?;
     Ok(Json(ActionResponse::<()>::success_empty(
         "Senha dos backups automaticos removida.",
     )))
@@ -328,6 +332,7 @@ async fn create_patient(
     Json(input): Json<CreatePatientInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::Patient>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let patient = features::patients::create_patient(&db, &user.id, &input).await?;
     Ok(Json(ActionResponse::success("Paciente cadastrado com sucesso.", patient)))
@@ -351,6 +356,7 @@ async fn update_patient(
     Json(input): Json<UpdatePatientInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::Patient>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let patient = features::patients::update_patient(&db, &user.id, &id, &input).await?;
     Ok(Json(ActionResponse::success("Paciente atualizado com sucesso.", patient)))
@@ -408,6 +414,7 @@ async fn create_appointment(
     Json(input): Json<CreateAppointmentInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::AppointmentDetail>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let appt = features::appointments::create_appointment(&db, &user.id, &input).await?;
     Ok(Json(ActionResponse::success("Atendimento criado com sucesso.", appt)))
@@ -431,6 +438,7 @@ async fn update_appointment(
     Json(input): Json<UpdateAppointmentInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::AppointmentDetail>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let appt = features::appointments::update_appointment(&db, &user.id, &id, &input).await?;
     Ok(Json(ActionResponse::success("Atendimento atualizado com sucesso.", appt)))
@@ -468,6 +476,7 @@ async fn upsert_payment(
     Json(input): Json<UpsertPaymentInput>,
 ) -> Result<Json<ActionResponse<crate::db::models::Payment>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     let payment = features::payments::upsert_payment(&db, &user.id, &input).await?;
     Ok(Json(ActionResponse::success("Pagamento salvo com sucesso.", payment)))
@@ -516,6 +525,7 @@ async fn save_record(
     Json(input): Json<SaveRecordInput>,
 ) -> Result<Json<ActionResponse<()>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     features::records::save_session_record(&db, &user.id, &input).await?;
     Ok(Json(ActionResponse::<()>::success_empty("Registro salvo com seguranca.")))
@@ -545,6 +555,7 @@ async fn create_upload_session(
     Json(input): Json<FileUploadRequest>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
     let user = get_authenticated_user(&headers, &state).await?;
+    input.validate()?;
     let db = state.get_or_open_user_db(&user.id).await?;
     crate::rate_limit::enforce_rate_limit(&db, "upload", &user.id, 20, 3600_000).await?;
     let (file_id, storage_path) = features::files::create_upload_session(&db, &state.config, &user.id, &input).await?;

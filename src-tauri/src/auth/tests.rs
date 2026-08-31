@@ -11,6 +11,58 @@ mod tests {
         (dir, pool)
     }
 
+    /// Um `AppState` completo apontando para um diretorio temporario, para exercitar
+    /// os handlers HTTP e nao so o `auth_service`.
+    async fn test_state() -> (tempfile::TempDir, std::sync::Arc<crate::AppState>) {
+        use std::collections::HashMap;
+        use tokio::sync::RwLock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_url = format!(
+            "sqlite:{}?mode=rwc",
+            dir.path().join("auth-test.db").to_string_lossy()
+        );
+        let auth_db = db::init_auth_database(&db_url).await.unwrap();
+
+        let config = crate::config::AppConfig {
+            database_url: String::new(),
+            auth_database_url: db_url,
+            server_port: 3001,
+            master_pepper: [9u8; 32],
+            storage_dir: dir.path().join("uploads"),
+            data_dir: dir.path().join("data"),
+        };
+
+        let state = std::sync::Arc::new(crate::AppState {
+            config,
+            auth_db,
+            user_dbs: RwLock::new(HashMap::new()),
+        });
+        (dir, state)
+    }
+
+    /// Faz um POST no router de autenticacao e devolve (status, corpo).
+    async fn post_auth(
+        state: std::sync::Arc<crate::AppState>,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+
+        let app = crate::auth::create_auth_router(state);
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
     // ─── Pure function tests (no DB) ─────────────────────────────────────
 
     #[test]
@@ -430,5 +482,78 @@ mod tests {
         let (_dir, db) = test_auth_db().await;
         let result = auth_service::register(&db, "empty@test.com", "senha12345", "  ").await;
         assert!(result.is_err());
+    }
+
+    // ─── Enumeracao de contas em /auth/recover ───────────────────────────
+
+    /// Conta inexistente e codigo errado tem de ser indistinguiveis.
+    ///
+    /// O handler resolvia o e-mail antes de qualquer limite e devolvia 404 com
+    /// "Nenhuma conta encontrada com este email." — um oraculo gratuito e sem teto
+    /// para descobrir quais enderecos tem conta na maquina.
+    #[tokio::test]
+    async fn recover_does_not_reveal_whether_the_account_exists() {
+        let (_dir, state) = test_state().await;
+
+        auth_service::register(&state.auth_db, "existe@test.com", "senha-de-teste", "Existe")
+            .await
+            .unwrap();
+
+        let (status_existe, corpo_existe) = post_auth(
+            state.clone(),
+            "/auth/recover",
+            serde_json::json!({"email": "existe@test.com", "recovery_secret": "AAAA-BBBB-CCCC-DDDD"}),
+        )
+        .await;
+
+        let (status_nao_existe, corpo_nao_existe) = post_auth(
+            state.clone(),
+            "/auth/recover",
+            serde_json::json!({"email": "naoexiste@test.com", "recovery_secret": "AAAA-BBBB-CCCC-DDDD"}),
+        )
+        .await;
+
+        assert_eq!(
+            status_existe, status_nao_existe,
+            "o status precisa ser o mesmo nos dois casos"
+        );
+        assert_eq!(
+            corpo_existe["message"], corpo_nao_existe["message"],
+            "a mensagem precisa ser a mesma nos dois casos"
+        );
+        assert_eq!(status_existe, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// O limite era chaveado pelo `user_id`, que so existe se a conta existir —
+    /// entao varrer enderecos inexistentes nao incrementava contador nenhum.
+    #[tokio::test]
+    async fn recover_rate_limits_unknown_emails_too() {
+        let (_dir, state) = test_state().await;
+
+        let tentativa = |n: usize| {
+            let state = state.clone();
+            async move {
+                post_auth(
+                    state,
+                    "/auth/recover",
+                    serde_json::json!({
+                        "email": "naoexiste@test.com",
+                        "recovery_secret": format!("AAAA-BBBB-CCCC-{:04}", n),
+                    }),
+                )
+                .await
+                .0
+            }
+        };
+
+        // O limite e 3 por 15 minutos.
+        for n in 0..3 {
+            assert_eq!(tentativa(n).await, axum::http::StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            tentativa(3).await,
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "a quarta tentativa com e-mail inexistente tem de ser barrada"
+        );
     }
 }

@@ -113,4 +113,59 @@ mod tests {
             "HSTS nao deve ser enviado enquanto o servidor fala HTTP puro"
         );
     }
+
+    /// As duas politicas do projeto tem de fechar as mesmas portas.
+    ///
+    /// O produto instalado e uma webview: quem vale la e a CSP do `tauri.conf.json`,
+    /// nao a que este middleware envia. Enquanto so a do servidor era testada, a da
+    /// webview carregava `script-src 'unsafe-inline'` e ninguem percebia — a defesa
+    /// efetiva era a mais fraca das duas, exatamente onde o usuario final executa.
+    #[test]
+    fn the_webview_csp_is_no_weaker_than_the_server_csp() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let csp = conf["app"]["security"]["csp"]
+            .as_str()
+            .expect("app.security.csp precisa existir");
+
+        for exigido in [
+            "default-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+            "frame-ancestors 'none'",
+        ] {
+            assert!(csp.contains(exigido), "CSP da webview sem {exigido:?}: {csp}");
+        }
+
+        assert!(
+            !csp.contains("unsafe-eval"),
+            "a webview nao pode permitir unsafe-eval: {csp}"
+        );
+
+        // `style-src 'unsafe-inline'` fica: o React aplica estilos via `style={{}}`.
+        // Em `script-src` nao ha justificativa, e e o que torna um XSS executavel.
+        let script_src = csp
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"))
+            .expect("script-src precisa ser declarado");
+        assert!(
+            !script_src.contains("unsafe-inline"),
+            "script-src da webview nao pode permitir unsafe-inline: {script_src}"
+        );
+    }
+
+    /// As fontes sao servidas do bundle. Um `@import` de fonts.googleapis.com faria
+    /// o app chamar um terceiro a cada abertura — e so funcionaria se a CSP fosse
+    /// reaberta, entao travar a CSP e o que impede a volta silenciosa.
+    #[test]
+    fn the_webview_csp_does_not_allow_external_font_hosts() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+
+        assert!(!csp.contains("fonts.googleapis.com"), "CSP ainda libera o Google Fonts");
+        assert!(!csp.contains("fonts.gstatic.com"), "CSP ainda libera o gstatic");
+    }
 }

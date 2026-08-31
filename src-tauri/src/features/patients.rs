@@ -194,8 +194,9 @@ pub async fn migrate_plaintext_pii(db: &SqlitePool, user_id: &str) -> Result<u64
         .map_err(|e| AppError::internal(format!("Erro ao cifrar PII do paciente: {}", e)))?;
 
         // Keep the search index in sync with the values just encrypted.
-        let tokens = generate_patient_tokens(&patient_id, &row.full_name, &pii);
-        set_patient_tokens(db, &patient_id, &tokens).await?;
+        let search_key = crypto::derive_search_key(user_id)?;
+        let tokens = generate_patient_tokens(&search_key, &patient_id, &row.full_name, &pii);
+        set_patient_tokens(db, user_id, &patient_id, &tokens).await?;
 
         migrated += 1;
     }
@@ -225,74 +226,260 @@ async fn clear_plaintext_pii(
 
 // ─── Search tokens ───────────────────────────────────────────────────────────────
 
-fn generate_patient_tokens(patient_id: &str, full_name: &str, pii: &PatientPii) -> Vec<(String, String, String)> {
+/// Tamanho do n-grama do indice de busca.
+///
+/// Termo com menos que isso nao gera n-grama nenhum e cai so no `full_name LIKE`.
+/// E uma mudanca de comportamento consciente: buscar "99" deixa de encontrar por
+/// telefone. Tres e o menor valor que mantem o indice util sem explodir de tamanho.
+pub(crate) const NGRAMA: usize = 3;
+
+/// Os n-gramas de um valor, sem repeticao e preservando a ordem de aparicao.
+fn ngramas(valor: &str) -> Vec<String> {
+    let chars: Vec<char> = valor.chars().collect();
+    if chars.len() < NGRAMA {
+        return Vec::new();
+    }
+    let mut vistos = std::collections::HashSet::new();
+    let mut saida = Vec::new();
+    for janela in chars.windows(NGRAMA) {
+        let g: String = janela.iter().collect();
+        if vistos.insert(g.clone()) {
+            saida.push(g);
+        }
+    }
+    saida
+}
+
+/// Os tokens de busca de um paciente, ja derivados.
+///
+/// Antes esta funcao devolvia telefone e e-mail em texto claro, e o `identity_key`
+/// carregava o telefone junto do nome. Agora nada aqui e reversivel: cada token e um
+/// HMAC-SHA256 truncado com chave derivada do pepper.
+///
+/// Dois tipos convivem:
+///
+/// * `identity_key` — HMAC do valor inteiro. Igualdade continua sendo igualdade,
+///   entao a deteccao de duplicatas mantem a semantica exata que tinha.
+/// * `ngram` — HMAC de cada trecho de tres caracteres, que e o que preserva a busca
+///   por substring.
+///
+/// O **nome normalizado** tambem entra nos n-gramas. Isso nao existia de proposito
+/// antes: buscar "jose" encontrava "José da Conceição" por acidente, atraves do
+/// `identity_key`, ja que `full_name LIKE '%jose%'` nao casa com o acento. Indexar o
+/// nome de propriedade preserva esse comportamento em vez de perde-lo na conversao.
+fn generate_patient_tokens(
+    search_key: &[u8; 32],
+    patient_id: &str,
+    full_name: &str,
+    pii: &PatientPii,
+) -> Vec<(String, String, String)> {
     let mut tokens = Vec::new();
+    let mut push = |tipo: &str, valor: &str| {
+        tokens.push((
+            patient_id.to_string(),
+            tipo.to_string(),
+            crypto::search_token(search_key, tipo, valor),
+        ));
+    };
 
-    // Identity key for duplicate detection
     let identity_key = utils::build_patient_identity_key(full_name, pii.phone.as_deref());
-    tokens.push((patient_id.to_string(), "identity_key".to_string(), identity_key));
+    push("identity_key", &identity_key);
 
-    // Phone digits
+    let nome = utils::normalize_patient_name(full_name);
+    for g in ngramas(&nome) {
+        push("ngram", &g);
+    }
+
     if let Some(phone) = &pii.phone {
         let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() {
-            tokens.push((patient_id.to_string(), "phone".to_string(), digits));
+        for g in ngramas(&digits) {
+            push("ngram", &g);
         }
     }
 
-    // Email
     if let Some(email) = &pii.email {
-        let lower = email.to_lowercase();
-        tokens.push((patient_id.to_string(), "email".to_string(), lower.clone()));
-        if let Some(local) = lower.split('@').next() {
-            if !local.is_empty() {
-                tokens.push((patient_id.to_string(), "email".to_string(), local.to_string()));
-            }
+        for g in ngramas(&email.to_lowercase()) {
+            push("ngram", &g);
         }
     }
 
     tokens
 }
 
-async fn set_patient_tokens(db: &SqlitePool, patient_id: &str, tokens: &[(String, String, String)]) -> Result<(), AppError> {
-    sqlx::query("DELETE FROM patient_search_tokens WHERE patient_id = ?")
+/// Substitui os tokens de um paciente, numa transacao unica.
+///
+/// Com n-gramas o volume por paciente passou de ~4 linhas para algumas dezenas. Fora
+/// de transacao, uma falha no meio deixaria o indice pela metade — e um indice pela
+/// metade nao da erro, so deixa de encontrar gente.
+async fn set_patient_tokens(
+    db: &SqlitePool,
+    user_id: &str,
+    patient_id: &str,
+    tokens: &[(String, String, String)],
+) -> Result<(), AppError> {
+    let mut tx = db
+        .begin()
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to open token transaction: {}", e)))?;
+
+    sqlx::query("DELETE FROM patient_search_tokens WHERE user_id = ? AND patient_id = ?")
+        .bind(user_id)
         .bind(patient_id)
-        .execute(db)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::internal(format!("Failed to clear search tokens: {}", e)))?;
 
     for (pid, token_type, token_text) in tokens {
         sqlx::query(
-            r#"INSERT INTO patient_search_tokens (patient_id, token_type, token_text) VALUES (?, ?, ?)"#,
+            r#"INSERT INTO patient_search_tokens (user_id, patient_id, token_type, token_text)
+            VALUES (?, ?, ?, ?)"#,
         )
+        .bind(user_id)
         .bind(pid)
         .bind(token_type)
         .bind(token_text)
-        .execute(db)
+        .execute(&mut *tx)
         .await
         .map_err(|e| AppError::internal(format!("Failed to insert search token: {}", e)))?;
     }
 
+    tx.commit()
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to commit search tokens: {}", e)))?;
     Ok(())
+}
+
+/// Reconstroi o indice de busca deste usuario quando ele perdeu a validade.
+///
+/// Roda quando o fingerprint da chave de busca difere do gravado — isto e, no
+/// primeiro login apos o upgrade que trocou o esquema de token, e depois de um
+/// restore num computador cujo pepper e outro (a chave muda, e todos os tokens
+/// antigos deixam de casar).
+///
+/// Nao da para fazer isso dentro da migration: regenerar os tokens exige decifrar
+/// `pii_encrypted`, e a chave nao existe dentro do SQL. Por isso a migration apenas
+/// descarta o indice e esta funcao o reconstroi, ja com a chave carregada.
+pub async fn reindex_search_tokens(db: &SqlitePool, user_id: &str) -> Result<u64, AppError> {
+    let fingerprint = crypto::search_key_fingerprint(user_id)?;
+
+    let atual: Option<String> = sqlx::query_scalar(
+        "SELECT key_fingerprint FROM search_index_state WHERE user_id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao ler estado do indice: {}", e)))?;
+
+    if atual.as_deref() == Some(fingerprint.as_str()) {
+        return Ok(0);
+    }
+
+    let search_key = crypto::derive_search_key(user_id)?;
+    let rows = sqlx::query_as::<_, PatientRow>(
+        "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao listar pacientes: {}", e)))?;
+
+    let mut indexados = 0u64;
+    for row in rows {
+        // Uma linha ilegivel nao pode derrubar a reindexacao inteira: ela perde a
+        // busca por telefone e e-mail, mas continua encontravel pelo nome.
+        let pii = match decrypt_pii(&row, user_id) {
+            Ok(pii) => pii,
+            Err(e) => {
+                tracing::warn!(
+                    "[Patients] PII do paciente {} ilegivel na reindexacao ({}); \
+                     indexando so o nome.",
+                    row.id,
+                    e
+                );
+                PatientPii::default()
+            }
+        };
+        let tokens = generate_patient_tokens(&search_key, &row.id, &row.full_name, &pii);
+        set_patient_tokens(db, user_id, &row.id, &tokens).await?;
+        indexados += 1;
+    }
+
+    let agora = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    sqlx::query(
+        r#"INSERT INTO search_index_state (user_id, key_fingerprint, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET key_fingerprint = ?, updated_at = ?"#,
+    )
+    .bind(user_id)
+    .bind(&fingerprint)
+    .bind(&agora)
+    .bind(&fingerprint)
+    .bind(&agora)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::internal(format!("Erro ao gravar estado do indice: {}", e)))?;
+
+    if indexados > 0 {
+        tracing::info!("[Patients] Indice de busca reconstruido: {} paciente(s).", indexados);
+    }
+    Ok(indexados)
 }
 
 // ─── Query helpers ───────────────────────────────────────────────────────────────
 
-/// Build the WHERE clause for searching patients.
-/// Uses plaintext `full_name LIKE` for name search and the token index for phone/email.
-fn search_where_clause(search: &str) -> (String, String) {
-    let phone_digits: String = search.chars().filter(|c| c.is_ascii_digit()).collect();
+/// As leituras possiveis de um termo de busca, cada uma ja como lista de tokens.
+///
+/// O mesmo termo pode ser telefone com mascara, e-mail ou nome, e o indice guarda
+/// n-gramas do telefone so em digitos, do e-mail em minusculas e do nome
+/// normalizado. Cada leitura vira uma lista propria porque elas competem, nao se
+/// somam: "(11) 98765-4321" so casa pela leitura em digitos, e exigir tambem os
+/// n-gramas da forma mascarada — que nunca foram indexados — nao acharia ninguem.
+fn search_ngram_groups(search_key: &[u8; 32], termo: &str) -> Vec<Vec<String>> {
+    let mut variantes = vec![termo.to_lowercase()];
 
-    // Token pattern: for phone-dominant queries, use phone digits; otherwise raw search
-    let token_pattern = if phone_digits.len() >= 3 && phone_digits.len() >= search.len().saturating_sub(2) {
-        format!("%{}%", phone_digits)
-    } else {
-        format!("%{}%", search)
-    };
+    let digitos: String = termo.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digitos.chars().count() >= NGRAMA {
+        variantes.push(digitos);
+    }
 
-    let name_like = format!("%{}%", search);
+    let nome = utils::normalize_patient_name(termo);
+    if !nome.is_empty() {
+        variantes.push(nome);
+    }
 
-    (name_like, token_pattern)
+    let mut grupos: Vec<Vec<String>> = Vec::new();
+    for v in variantes {
+        let tokens: Vec<String> = ngramas(&v)
+            .iter()
+            .map(|g| crypto::search_token(search_key, "ngram", g))
+            .collect();
+        if !tokens.is_empty() && !grupos.contains(&tokens) {
+            grupos.push(tokens);
+        }
+    }
+    grupos
+}
+
+/// A condicao SQL que casa pacientes por n-grama.
+///
+/// Dentro de uma leitura, o paciente precisa ter **todos** os n-gramas; entre
+/// leituras, basta **uma** casar. Como n-grama nao guarda posicao, isso admite falso
+/// positivo — "abc" casa quem tenha "ab" e "bc" em pontos distintos do texto. Numa
+/// busca, onde o resultado esta a vista, isso e aceitavel; deixar de encontrar nao
+/// seria.
+fn clausula_ngram(grupos: &[Vec<String>]) -> String {
+    let partes: Vec<String> = grupos
+        .iter()
+        .map(|tokens| {
+            let marcadores = vec!["?"; tokens.len()].join(", ");
+            format!(
+                "id IN (SELECT patient_id FROM patient_search_tokens \
+                 WHERE user_id = ? AND token_type = 'ngram' AND token_text IN ({marcadores}) \
+                 GROUP BY patient_id HAVING COUNT(DISTINCT token_text) = ?)"
+            )
+        })
+        .collect();
+    format!("({})", partes.join(" OR "))
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────────
@@ -353,57 +540,66 @@ pub async fn list_patients(
 
         (rows, total.0)
     } else {
-        let (name_pattern, token_pattern) = search_where_clause(search);
+        // A busca por nome continua no `full_name LIKE`, sobre a coluna em claro; o
+        // indice cobre telefone, e-mail e o nome normalizado (que casa acento). Os
+        // dois ramos sao unidos por OR, como antes.
+        let name_pattern = format!("%{}%", search);
+        let search_key = crypto::derive_search_key(user_id)?;
+        let grupos = search_ngram_groups(&search_key, search);
 
-        let total: (i64,) = if has_status {
-            sqlx::query_as(
-                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ? AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))",
-            )
-            .bind(user_id)
-            .bind(status_filter.unwrap())
-            .bind(&name_pattern)
-            .bind(&token_pattern)
-            .fetch_one(db)
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+        // Termo com menos de NGRAMA caracteres nao produz n-grama nenhum. Nesse caso
+        // a busca fica so no nome, em vez de montar um `IN ()` vazio.
+        let condicao = if grupos.is_empty() {
+            "full_name LIKE ?".to_string()
         } else {
-            sqlx::query_as(
-                "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?))",
-            )
-            .bind(user_id)
-            .bind(&name_pattern)
-            .bind(&token_pattern)
-            .fetch_one(db)
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?
+            format!("(full_name LIKE ? OR {})", clausula_ngram(&grupos))
         };
 
-        let rows = if has_status {
-            sqlx::query_as::<_, PatientRow>(
-                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL AND status = ? AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?",
-            )
-            .bind(user_id)
-            .bind(status_filter.unwrap())
-            .bind(&name_pattern)
-            .bind(&token_pattern)
+        let filtro_status = if has_status { "AND status = ?" } else { "" };
+        let sql_total = format!(
+            "SELECT COUNT(*) FROM patients WHERE user_id = ? AND deleted_at IS NULL \
+             {filtro_status} AND {condicao}"
+        );
+        let sql_rows = format!(
+            "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL \
+             {filtro_status} AND {condicao} ORDER BY full_name LIMIT ? OFFSET ?"
+        );
+
+        let mut q = sqlx::query_as::<_, (i64,)>(&sql_total).bind(user_id);
+        if has_status {
+            q = q.bind(status_filter.unwrap());
+        }
+        q = q.bind(&name_pattern);
+        for tokens in &grupos {
+            q = q.bind(user_id);
+            for t in tokens {
+                q = q.bind(t);
+            }
+            q = q.bind(tokens.len() as i64);
+        }
+        let total: (i64,) = q
+            .fetch_one(db)
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to count patients: {}", e)))?;
+
+        let mut q = sqlx::query_as::<_, PatientRow>(&sql_rows).bind(user_id);
+        if has_status {
+            q = q.bind(status_filter.unwrap());
+        }
+        q = q.bind(&name_pattern);
+        for tokens in &grupos {
+            q = q.bind(user_id);
+            for t in tokens {
+                q = q.bind(t);
+            }
+            q = q.bind(tokens.len() as i64);
+        }
+        let rows = q
             .bind(per_page)
             .bind(offset)
             .fetch_all(db)
             .await
-            .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?
-        } else {
-            sqlx::query_as::<_, PatientRow>(
-                "SELECT * FROM patients WHERE user_id = ? AND deleted_at IS NULL AND (full_name LIKE ? OR id IN (SELECT patient_id FROM patient_search_tokens WHERE token_text LIKE ?)) ORDER BY full_name LIMIT ? OFFSET ?",
-            )
-            .bind(user_id)
-            .bind(&name_pattern)
-            .bind(&token_pattern)
-            .bind(per_page)
-            .bind(offset)
-            .fetch_all(db)
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?
-        };
+            .map_err(|e| AppError::internal(format!("Failed to search patients: {}", e)))?;
 
         (rows, total.0)
     };
@@ -501,7 +697,15 @@ async fn find_duplicate_patient(
     phone: Option<&str>,
     exclude_patient_id: Option<&str>,
 ) -> Result<Option<Patient>, AppError> {
-    let input_key = utils::build_patient_identity_key(full_name, phone);
+    // O `identity_key` agora e um HMAC do mesmo insumo. Igualdade continua sendo
+    // igualdade, entao a semantica de deteccao de duplicata nao muda — mas o valor
+    // deixa de carregar o telefone em claro no indice.
+    let search_key = crypto::derive_search_key(user_id)?;
+    let input_key = crypto::search_token(
+        &search_key,
+        "identity_key",
+        &utils::build_patient_identity_key(full_name, phone),
+    );
 
     // Try identity_key token index first
     let matched_id: Option<String> = if let Some(exclude) = exclude_patient_id {
@@ -509,7 +713,7 @@ async fn find_duplicate_patient(
             r#"SELECT t.patient_id FROM patient_search_tokens t
             JOIN patients p ON p.id = t.patient_id
             WHERE t.token_type = 'identity_key' AND t.token_text = ?
-            AND p.user_id = ? AND p.deleted_at IS NULL
+            AND t.user_id = ? AND p.user_id = t.user_id AND p.deleted_at IS NULL
             AND p.id != ?
             LIMIT 1"#,
         )
@@ -524,7 +728,7 @@ async fn find_duplicate_patient(
             r#"SELECT t.patient_id FROM patient_search_tokens t
             JOIN patients p ON p.id = t.patient_id
             WHERE t.token_type = 'identity_key' AND t.token_text = ?
-            AND p.user_id = ? AND p.deleted_at IS NULL
+            AND t.user_id = ? AND p.user_id = t.user_id AND p.deleted_at IS NULL
             LIMIT 1"#,
         )
         .bind(&input_key)
@@ -567,7 +771,11 @@ async fn find_duplicate_patient(
                 continue;
             }
         };
-        let existing_key = utils::build_patient_identity_key(&row.full_name, pii.phone.as_deref());
+        let existing_key = crypto::search_token(
+            &search_key,
+            "identity_key",
+            &utils::build_patient_identity_key(&row.full_name, pii.phone.as_deref()),
+        );
         if existing_key == input_key {
             return Ok(Some(row_to_patient(row, user_id)?));
         }
@@ -668,8 +876,9 @@ pub async fn create_patient(
 
     // Index search tokens
     let pii = input_to_pii(input);
-    let tokens = generate_patient_tokens(&id, &input.full_name, &pii);
-    set_patient_tokens(db, &id, &tokens).await?;
+    let search_key = crypto::derive_search_key(user_id)?;
+    let tokens = generate_patient_tokens(&search_key, &id, &input.full_name, &pii);
+    set_patient_tokens(db, user_id, &id, &tokens).await?;
 
     audit::write_audit_log(
         db, user_id, "update", "patient", Some(&id),
@@ -745,8 +954,9 @@ pub async fn update_patient(
 
     // Re-index search tokens
     let pii = input_to_pii(&create_input);
-    let tokens = generate_patient_tokens(patient_id, &input.full_name, &pii);
-    set_patient_tokens(db, patient_id, &tokens).await?;
+    let search_key = crypto::derive_search_key(user_id)?;
+    let tokens = generate_patient_tokens(&search_key, patient_id, &input.full_name, &pii);
+    set_patient_tokens(db, user_id, patient_id, &tokens).await?;
 
     audit::write_audit_log(
         db, user_id, "update", "patient", Some(patient_id),
@@ -1173,7 +1383,148 @@ mod tests {
             !tokens.iter().any(|(_, txt)| txt.is_empty()),
             "nenhum token vazio no indice de busca; obtido: {tokens:?}"
         );
-        assert!(tokens.iter().any(|(t, txt)| t == "phone" && txt == "11955558844"));
+
+        // Este assert dizia o contrario ate a migration 15: exigia encontrar o
+        // telefone literal `11955558844` gravado num token. Era exatamente o
+        // problema — o indice devolvia ao disco, em claro, a PII que a migration 8
+        // tinha acabado de cifrar.
+        assert!(
+            !tokens.iter().any(|(_, txt)| txt.contains("11955558844")),
+            "nenhum token pode conter o telefone legivel; obtido: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().all(|(t, _)| t == "ngram" || t == "identity_key"),
+            "so os dois tipos derivados devem existir; obtido: {tokens:?}"
+        );
+
+        // E a busca pelo telefone continua encontrando o paciente.
+        let achou = list_patients(&db, user_id, "11955558844", 1, 50, None)
+            .await
+            .unwrap();
+        assert_eq!(achou.total, 1, "busca por telefone deve funcionar apos a migracao");
+    }
+
+    /// O criterio de aceite que o indice antigo nunca teve: busca **parcial**.
+    ///
+    /// O unico teste de busca cobria o telefone completo, entao a heuristica que
+    /// decidia entre digitos e termo cru nunca foi exercitada num caso real — e ela
+    /// falhava justamente com telefone mascarado, porque exigia que os digitos
+    /// fossem quase todo o termo.
+    #[tokio::test]
+    async fn searches_by_partial_phone_and_by_email() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400b8";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        create_patient(
+            &db,
+            user_id,
+            &CreatePatientInput {
+                full_name: "Helena Prado".into(),
+                chart_number: Some("P100".into()),
+                phone: Some("11987654321".into()),
+                email: Some("helena.prado@exemplo.com".into()),
+                birth_date: None,
+                health_history: None,
+                medications_in_use: None,
+                emergency_phone: None,
+                admin_notes: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        create_patient(
+            &db,
+            user_id,
+            &CreatePatientInput {
+                full_name: "Outro Paciente".into(),
+                chart_number: Some("P101".into()),
+                phone: Some("21333334444".into()),
+                email: Some("outro@exemplo.com".into()),
+                birth_date: None,
+                health_history: None,
+                medications_in_use: None,
+                emergency_phone: None,
+                admin_notes: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        for (termo, esperado, porque) in [
+            ("98765", 1, "trecho do meio do telefone"),
+            ("11987", 1, "prefixo do telefone"),
+            ("(11) 98765-4321", 1, "telefone com mascara completa"),
+            ("helena.prado", 1, "parte local do e-mail"),
+            ("exemplo.com", 2, "dominio compartilhado pelos dois"),
+            ("Helena", 1, "nome"),
+            ("00000", 0, "nada casa"),
+        ] {
+            let r = list_patients(&db, user_id, termo, 1, 50, None).await.unwrap();
+            assert_eq!(r.total, esperado, "busca por {termo:?} ({porque})");
+        }
+    }
+
+    /// A busca por nome acentuado acontecia por acidente, atraves do `identity_key`
+    /// em claro — `full_name LIKE '%jose%'` nao casa com "José". Agora o nome
+    /// normalizado e indexado de proposito, entao o comportamento e intencional.
+    #[tokio::test]
+    async fn searches_by_unaccented_name() {
+        let (_dir, db) = test_db().await;
+        let user_id = "550e8400-e29b-41d4-a716-4466554400b9";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(user_id).unwrap();
+        seed_user(&db, user_id).await;
+
+        create_patient(
+            &db,
+            user_id,
+            &input("José da Conceição", Some("P200"), Some("11955556666")),
+        )
+        .await
+        .unwrap();
+
+        let r = list_patients(&db, user_id, "jose", 1, 50, None).await.unwrap();
+        assert_eq!(r.total, 1, "buscar sem acento deve encontrar o nome acentuado");
+
+        let r = list_patients(&db, user_id, "conceicao", 1, 50, None).await.unwrap();
+        assert_eq!(r.total, 1, "sobrenome sem acento tambem");
+    }
+
+    /// A tabela de tokens era a unica sem coluna de dono: o escopo vinha so do JOIN
+    /// com `patients`, e dependia de todo autor futuro lembrar de escreve-lo.
+    #[tokio::test]
+    async fn search_tokens_are_scoped_to_their_owner() {
+        let (_dir, db) = test_db().await;
+        let dono = "550e8400-e29b-41d4-a716-4466554400c1";
+        let outro = "550e8400-e29b-41d4-a716-4466554400c2";
+        crate::crypto::set_pepper(&[3u8; 32]);
+        crate::crypto::init_user_crypto(dono).unwrap();
+        crate::crypto::init_user_crypto(outro).unwrap();
+        seed_user(&db, dono).await;
+        seed_user(&db, outro).await;
+
+        create_patient(&db, dono, &input("Alvo Silva", Some("P300"), Some("11912345678")))
+            .await
+            .unwrap();
+
+        // Toda linha do indice carrega o dono.
+        let sem_dono: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM patient_search_tokens WHERE user_id IS NULL OR user_id = ''",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(sem_dono, 0, "nenhum token pode ficar sem dono");
+
+        // E o outro usuario nao alcanca o paciente por busca nenhuma.
+        for termo in ["Alvo", "12345678", "11912345678"] {
+            let r = list_patients(&db, outro, termo, 1, 50, None).await.unwrap();
+            assert_eq!(r.total, 0, "busca por {termo:?} nao pode vazar entre contas");
+        }
     }
 
     /// An undecryptable row must not break the whole patient list.

@@ -99,7 +99,11 @@ jobs:
           # MASTER_PEPPER e override apenas do processo e nao toca o cofre de
           # credenciais, entao o smoke test nao depende de Secret Service (Linux)
           # nem de Keychain destravado (macOS) no runner.
-          export MASTER_PEPPER=0000000000000000000000000000000000000000000000000000000000000000
+          #
+          # Gerado a cada execucao: o app agora recusa um pepper com todos os bytes
+          # iguais, porque um valor desses nao vem de gerador seguro e nao protege
+          # nada. O smoke test precisa de um pepper *isolado*, nao de um pepper fraco.
+          export MASTER_PEPPER=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n")
           export AUTH_DATABASE_URL="sqlite:$TMP/auth.db?mode=rwc"
           export DATABASE_URL="sqlite:$TMP/app.db?mode=rwc"
           export DATA_DIR="$TMP/data"

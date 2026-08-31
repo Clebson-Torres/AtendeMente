@@ -43,12 +43,65 @@ pub fn derive_user_key(user_id: &str) -> Result<[u8; 32], AppError> {
     derive_key_inner(user_id, pepper)
 }
 
+/// Deriva a chave de um usuario a partir de um pepper **especifico**.
+///
+/// Usada so pelo caminho legado do restore: bundles ate a v2 carregam o pepper em
+/// claro no manifesto, e a chave precisa ser reconstruida a partir dele.
+pub fn derive_key_from_pepper(user_id: &str, pepper: &[u8; 32]) -> Result<[u8; 32], AppError> {
+    derive_key_inner(user_id, pepper)
+}
+
 fn derive_key_inner(user_id: &str, pepper: &[u8; 32]) -> Result<[u8; 32], AppError> {
     let hk = Hkdf::<Sha256>::new(Some(pepper), user_id.as_bytes());
     let mut okm = [0u8; 32];
     hk.expand(&[], &mut okm)
         .map_err(|_| AppError::internal("HKDF expand falhou."))?;
     Ok(okm)
+}
+
+/// Chave de **indexacao de busca** deste usuario.
+///
+/// Deliberadamente distinta da chave de dados: um token de busca e um valor que fica
+/// no banco em claro por natureza (e comparado por igualdade), entao nao deve ser
+/// produzido com a mesma chave que protege o prontuario. O `info` diferente do HKDF
+/// garante que uma chave nao possa ser usada no lugar da outra.
+pub fn derive_search_key(user_id: &str) -> Result<[u8; 32], AppError> {
+    let pepper = MASTER_PEPPER
+        .get()
+        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
+    let hk = Hkdf::<Sha256>::new(Some(pepper), user_id.as_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(b"atendemente:search-index:v1", &mut okm)
+        .map_err(|_| AppError::internal("HKDF expand falhou."))?;
+    Ok(okm)
+}
+
+/// Identifica a chave de busca em uso, sem revelar a chave.
+///
+/// Gravado ao lado do indice: quando o valor muda — upgrade que troca o esquema de
+/// token, ou restore num computador com outro pepper — o indice inteiro perdeu a
+/// validade e precisa ser reconstruido.
+pub fn search_key_fingerprint(user_id: &str) -> Result<String, AppError> {
+    let key = derive_search_key(user_id)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"fingerprint:");
+    hasher.update(key);
+    Ok(format!("{:x}", hasher.finalize())[..32].to_string())
+}
+
+/// Token de busca: HMAC-SHA256 truncado, em base64url sem padding.
+///
+/// Truncado em 12 bytes (96 bits). O espaco de colisao continua muito maior que a
+/// base de pacientes de um consultorio, e o indice fica um terco menor.
+pub fn search_token(key: &[u8; 32], tipo: &str, valor: &str) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .expect("HMAC aceita chave de qualquer tamanho");
+    mac.update(tipo.as_bytes());
+    mac.update(b":");
+    mac.update(valor.as_bytes());
+    let out = mac.finalize().into_bytes();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&out[..12])
 }
 
 /// Initialize user crypto on login — derives and caches the key.
@@ -198,8 +251,8 @@ pub struct ReencryptReport {
     pub session_records: usize,
 }
 
-/// Re-cifra todo o conteudo cifrado de um banco da chave derivada de
-/// `old_pepper` para a derivada do pepper atual.
+/// Re-cifra todo o conteudo cifrado de um banco de `old_key` para a chave atual
+/// deste usuario.
 ///
 /// Tres coisas que a versao anterior errava, e que custaram caro:
 ///
@@ -217,19 +270,21 @@ pub struct ReencryptReport {
 /// SQLite e sao convertidos por quem chama, sobre uma copia em area temporaria.
 pub async fn reencrypt_all_pii(
     db: &sqlx::SqlitePool,
-    old_pepper: &[u8; 32],
+    old_key: &[u8; 32],
     user_id: &str,
 ) -> Result<ReencryptReport, AppError> {
-    let current_pepper = MASTER_PEPPER
-        .get()
-        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
+    // Recebe a chave, nao o pepper.
+    //
+    // Antes o backup transportava o pepper mestre — a raiz que deriva a chave de
+    // **todos** os usuarios da maquina — so para que esta funcao pudesse chamar
+    // `derive_key_inner`. Como e a unica coisa que ela fazia com ele, passar a chave
+    // ja derivada permite ao bundle carregar apenas o segredo daquele usuario.
+    let new_key = derive_user_key(user_id)?;
 
-    if old_pepper == current_pepper {
+    if old_key == &new_key {
         return Ok(ReencryptReport::default());
     }
-
-    let old_key = derive_key_inner(user_id, old_pepper)?;
-    let new_key = derive_key_inner(user_id, current_pepper)?;
+    let old_key = *old_key;
 
     let mut tx = db
         .begin()
@@ -329,7 +384,7 @@ pub async fn reencrypt_all_pii(
     Ok(report)
 }
 
-/// Converte um anexo da chave derivada de `old_pepper` para a do pepper atual.
+/// Converte um anexo de `old_key` para a chave atual deste usuario.
 ///
 /// Vale para os dois formatos que aparecem em backups reais: o bundle feito sem
 /// sessao guarda o anexo cifrado com a chave antiga; o feito apos login guarda
@@ -338,18 +393,14 @@ pub async fn reencrypt_all_pii(
 /// a chave atual nos dois — inclusive no que entrou em claro.
 pub fn reencrypt_file_bytes(
     bytes: &[u8],
-    old_pepper: &[u8; 32],
+    old_key: &[u8; 32],
     user_id: &str,
 ) -> Result<Vec<u8>, AppError> {
-    let current_pepper = MASTER_PEPPER
-        .get()
-        .ok_or_else(|| AppError::internal("Master pepper not initialized."))?;
-    if old_pepper == current_pepper {
+    let new_key = derive_user_key(user_id)?;
+    if old_key == &new_key {
         return Ok(bytes.to_vec());
     }
-    let old_key = derive_key_inner(user_id, old_pepper)?;
-    let new_key = derive_key_inner(user_id, current_pepper)?;
-    let plaintext = decrypt_file(bytes, &old_key)?;
+    let plaintext = decrypt_file(bytes, old_key)?;
     encrypt_file(&plaintext, &new_key)
 }
 
@@ -410,8 +461,16 @@ mod tests {
         let content = "Texto secreto";
         let mut encrypted = encrypt_content_with_key(content, &key).unwrap();
 
+        // Trocar o primeiro caractere por um **diferente** do que estava la.
+        //
+        // O teste fixava 'x', e o payload comeca com um caractere base64 aleatorio:
+        // quando calhava de ser 'x', a "adulteracao" nao alterava nada, a decifra
+        // funcionava e o teste falhava. Uma falha a cada ~64 execucoes, que aparecia
+        // como flakiness sem relacao com a mudanca em revisao.
         let original = encrypted.encrypted_payload.clone();
-        encrypted.encrypted_payload = format!("x{}", &original[1..]);
+        let primeiro = original.chars().next().unwrap();
+        let trocado = if primeiro == 'A' { 'B' } else { 'A' };
+        encrypted.encrypted_payload = format!("{}{}", trocado, &original[1..]);
 
         assert!(decrypt_content_with_key(&encrypted, &key).is_err());
     }

@@ -43,6 +43,13 @@ struct LoginInput {
     password: String,
 }
 
+/// Resposta unica do caminho de recuperacao.
+///
+/// Conta inexistente, codigo de recuperacao errado e codigo ja gasto devolvem
+/// exatamente isto. Qualquer diferenca entre esses casos e um oraculo de
+/// enumeracao de contas.
+const RECOVERY_FAILED: &str = "Chave de recuperacao invalida.";
+
 #[derive(Deserialize)]
 struct RecoverInput {
     user_id: Option<String>,
@@ -162,6 +169,16 @@ async fn login_handler(
         tracing::warn!("[Auth] Falha ao migrar PII em texto claro no login: {}", e);
     }
 
+    // Reconstroi o indice de busca se ele perdeu a validade — primeiro login apos o
+    // upgrade que trocou o esquema de token, ou restore num computador com outro
+    // pepper. Best-effort pelo mesmo motivo da migracao acima: um indice
+    // desatualizado piora a busca, mas nao justifica barrar o login.
+    if let Err(e) =
+        crate::features::patients::reindex_search_tokens(&user_db, &result.user_id).await
+    {
+        tracing::warn!("[Auth] Falha ao reindexar a busca no login: {}", e);
+    }
+
     Ok(Json(ActionResponse::success(
         "Login realizado com sucesso!",
         serde_json::json!({
@@ -252,28 +269,45 @@ async fn recover_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<RecoverInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
-    let user_id = match (&input.user_id, &input.email) {
+    // Limite ANTES de resolver o identificador, e sobre o que o chamador enviou.
+    //
+    // O limite era aplicado sobre o `user_id`, que so existe depois de a conta ter
+    // sido encontrada — entao consulta com e-mail inexistente nunca incrementava
+    // contador nenhum, e o 404 ("Nenhuma conta encontrada com este email.") separava
+    // conta existente de inexistente sem custo e sem teto. O login ja gastava um
+    // Argon2 sobre um hash dummy para nao vazar isso pelo tempo de resposta; este
+    // caminho vazava pela mensagem.
+    let identificador = match (&input.user_id, &input.email) {
         (Some(uid), _) if !uid.is_empty() => uid.clone(),
-        (_, Some(email)) if !email.is_empty() => {
-            auth_service::find_user_id_by_email(&state.auth_db, email)
-                .await
-                .map_err(|e| AppError::not_found(e))?
-        }
+        (_, Some(email)) if !email.is_empty() => email.trim().to_lowercase(),
         _ => return Err(AppError::bad_request("Informe user_id ou email.")),
     };
 
     crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:password-reset", &user_id, 3, 900_000,
+        &state.auth_db, "auth:password-reset", &identificador, 3, 900_000,
     )
     .await?;
 
-    let result = auth_service::recover_with_secret(
-        &state.auth_db,
-        &user_id,
-        &input.recovery_secret,
-    )
-    .await
-    .map_err(|e| AppError::unauthorized(e))?;
+    // Conta inexistente e codigo errado precisam ser indistinguiveis: mesmo status,
+    // mesma mensagem. Resolver o e-mail so depois do limite, e dobrar a falha na
+    // mesma resposta do codigo invalido.
+    let user_id = match (&input.user_id, &input.email) {
+        (Some(uid), _) if !uid.is_empty() => Some(uid.clone()),
+        _ => auth_service::find_user_id_by_email(&state.auth_db, &identificador)
+            .await
+            .ok(),
+    };
+
+    let result = match user_id {
+        Some(uid) => auth_service::recover_with_secret(
+            &state.auth_db,
+            &uid,
+            &input.recovery_secret,
+        )
+        .await
+        .map_err(|_| AppError::unauthorized(RECOVERY_FAILED))?,
+        None => return Err(AppError::unauthorized(RECOVERY_FAILED)),
+    };
 
     Ok(Json(ActionResponse::success(
         "Chave verificada. Crie uma nova senha.",
@@ -389,6 +423,10 @@ async fn unlock_handler(
 
     if let Err(e) = crate::features::patients::migrate_plaintext_pii(&user_db, &user_id).await {
         tracing::warn!("[Auth] Falha ao migrar PII em texto claro no unlock: {}", e);
+    }
+
+    if let Err(e) = crate::features::patients::reindex_search_tokens(&user_db, &user_id).await {
+        tracing::warn!("[Auth] Falha ao reindexar a busca no unlock: {}", e);
     }
 
     record_session_event(

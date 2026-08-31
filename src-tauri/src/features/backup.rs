@@ -14,15 +14,24 @@ use crate::config::AppConfig;
 use crate::crypto;
 use crate::errors::AppError;
 
-const BACKUP_VERSION: u32 = 2;
-const BACKUP_VERSION_LEGACY: u32 = 1;
+/// Formato atual: a chave do usuario viaja num envelope cifrado pela senha do
+/// backup, em vez do pepper mestre em claro.
+const BACKUP_VERSION: u32 = 3;
+/// Formatos ainda restauraveis. A v2 traz `pepper` em hex no manifesto; a v1 traz
+/// PII nas colunas em texto claro.
+const BACKUP_VERSIONS_ACEITAS: &[u32] = &[3, 2, 1];
 const DB_ENTRY: &str = "database/atendemente.db";
 const MANIFEST_ENTRY: &str = "manifest.json";
 const ATND_MAGIC: &[u8; 4] = b"ATND";
 const SALT_SIZE: usize = 16;
 /// Minimum length for a user-supplied backup password. Only enforced when
 /// *creating* a backup — older backups with weaker passwords still restore.
-const MIN_BACKUP_PASSWORD_LEN: usize = 8;
+///
+/// Vem de `config` para que exista um unico numero. Este arquivo exigia 8 enquanto
+/// a tela de Configuracoes e o backup agendado exigiam 12: um `POST /api/backup`
+/// fora da interface produzia um bundle completo — banco, prontuarios e anexos —
+/// protegido por uma senha que a aplicacao promete nao aceitar.
+use crate::config::MIN_AUTO_BACKUP_PASSWORD_LEN as MIN_BACKUP_PASSWORD_LEN;
 
 /// Removes a temporary file on drop, including on early `?` returns.
 /// Backup temporaries hold the database in plaintext, so they must never
@@ -57,10 +66,27 @@ pub struct BackupManifest {
     pub kdf: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
+    /// **Descontinuado — nunca mais escrito, ainda lido.**
+    ///
+    /// Ate a v2 o manifesto carregava o pepper mestre em hex: a raiz que deriva a
+    /// chave de *todos* os usuarios daquela maquina. Quem quebrasse a senha de um
+    /// unico backup obtinha a chave de todo mundo, e ela seguia valendo para os
+    /// bancos que continuavam na maquina. O campo permanece porque backups v2 —
+    /// inclusive as fixtures congeladas da v1.0.19 — dependem dele para restaurar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pepper: Option<String>,
+    /// Descontinuado junto com `pepper`; nunca foi lido por ninguem.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pepper_fingerprint: Option<String>,
+    /// A chave de dados **deste** usuario, cifrada com uma chave derivada da senha
+    /// do backup. Substitui `pepper` a partir da v3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<String>,
+    /// Salt do Argon2id que abre o envelope. Proprio, e nao o mesmo do ZIP: reusar
+    /// aquele faria o envelope ser protegido duas vezes pela mesma chave, o que nao
+    /// acrescenta nada.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope_salt: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,13 +151,31 @@ pub async fn create_backup_with_password(
         file_hashes.insert(path.clone(), sha256_hex(bytes));
     }
 
-    let (salt_hex, pepper_field, pepper_fp) = if is_encrypted {
+    // O que viaja no bundle e a chave **deste** usuario, cifrada pela senha do
+    // backup — nao mais o pepper mestre da maquina.
+    //
+    // O motivo do campo antigo era legitimo: restaurar num computador novo, onde o
+    // cofre de credenciais nao existe mais, exige algum material de chave dentro do
+    // arquivo. Mas o pepper abre os dados de todos os usuarios da instalacao, e
+    // continua valendo para os bancos que ficaram para tras. O envelope resolve o
+    // mesmo problema entregando so o segredo daquele usuario.
+    let (salt_hex, envelope_hex, envelope_salt_hex) = if is_encrypted {
         let mut salt = [0u8; SALT_SIZE];
         rand::rngs::OsRng.fill_bytes(&mut salt);
-        let fp = crypto::pepper_fingerprint().ok();
-        let pepper_hex = crypto::get_pepper().map(|p| hex_encode(p));
-        // pepper_hex is only stored inside the encrypted ZIP (protected by password)
-        (Some(hex_encode(&salt)), pepper_hex, fp)
+
+        let mut envelope_salt = [0u8; SALT_SIZE];
+        rand::rngs::OsRng.fill_bytes(&mut envelope_salt);
+
+        let chave_do_usuario = crypto::derive_user_key(user_id)?;
+        let senha = password.unwrap_or_default();
+        let chave_do_envelope = crypto::derive_key_from_password(senha, &envelope_salt)?;
+        let envelope = crypto::encrypt_file(&chave_do_usuario, &chave_do_envelope)?;
+
+        (
+            Some(hex_encode(&salt)),
+            Some(hex_encode(&envelope)),
+            Some(hex_encode(&envelope_salt)),
+        )
     } else {
         (None, None, None)
     };
@@ -145,8 +189,11 @@ pub async fn create_backup_with_password(
         encrypted: if is_encrypted { Some(true) } else { None },
         kdf: if is_encrypted { Some("argon2id".into()) } else { None },
         salt: salt_hex.clone(),
-        pepper: pepper_field,
-        pepper_fingerprint: pepper_fp,
+        // Descontinuados: lidos de bundles antigos, nunca escritos.
+        pepper: None,
+        pepper_fingerprint: None,
+        envelope: envelope_hex,
+        envelope_salt: envelope_salt_hex,
     };
 
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -206,6 +253,61 @@ pub async fn create_backup_with_password(
     })
 }
 
+/// A chave com que este bundle foi cifrado, se der para saber.
+///
+/// Tres formatos convivem, e a ordem importa:
+///
+/// * **v3** — `envelope`: a chave do usuario cifrada pela senha do backup. E o unico
+///   caminho que nao expoe a raiz da instalacao.
+/// * **v2** — `pepper` em hex. Descontinuado, mas as fixtures congeladas da v1.0.19
+///   dependem dele, e todo backup ja emitido tambem.
+/// * **nenhum dos dois** — `None`. O restore prossegue sem re-cifra, o que so esta
+///   certo para um bundle v1 legitimo (PII em texto claro, sem nada cifrado).
+fn chave_de_origem(
+    manifest: &BackupManifest,
+    user_id: &str,
+    password: Option<&str>,
+) -> Result<Option<[u8; 32]>, AppError> {
+    if let (Some(envelope_hex), Some(salt_hex)) = (&manifest.envelope, &manifest.envelope_salt) {
+        let senha = password.ok_or_else(|| {
+            AppError::bad_request("Backup com envelope de chave requer senha.")
+        })?;
+        let salt = hex_decode(salt_hex)?;
+        let envelope = hex_decode(envelope_hex)?;
+        let chave_do_envelope = crypto::derive_key_from_password(senha, &salt)?;
+        let bytes = crypto::decrypt_file(&envelope, &chave_do_envelope).map_err(|_| {
+            AppError::bad_request(
+                "Nao foi possivel abrir o envelope de chave do backup. Senha incorreta \
+                 ou arquivo corrompido.",
+            )
+        })?;
+        // Um envelope que abre mas nao tem 32 bytes e um bundle adulterado; seguir
+        // sem re-cifra deixaria todo o conteudo ilegivel em silencio.
+        let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+            AppError::bad_request("Envelope de chave do backup tem tamanho invalido.")
+        })?;
+        return Ok(Some(bytes));
+    }
+
+    // Formato v2: pepper em claro. Derivar a chave daquele usuario e seguir.
+    if let Some(hex) = &manifest.pepper {
+        let bytes = hex_decode(hex)?;
+        if bytes.len() != 32 {
+            tracing::warn!(
+                "[Backup] O manifesto traz um pepper de {} bytes em vez de 32; \
+                 restaurando sem re-cifra.",
+                bytes.len()
+            );
+            return Ok(None);
+        }
+        let mut pepper = [0u8; 32];
+        pepper.copy_from_slice(&bytes);
+        return Ok(Some(crypto::derive_key_from_pepper(user_id, &pepper)?));
+    }
+
+    Ok(None)
+}
+
 pub async fn restore_backup(
     db: &SqlitePool,
     config: &AppConfig,
@@ -242,8 +344,7 @@ pub async fn restore_backup_with_password(
         .map_err(|_| AppError::bad_request("Backup invalido ou corrompido."))?;
     let manifest = read_manifest(&mut archive)?;
 
-    let accepted_versions = [BACKUP_VERSION, BACKUP_VERSION_LEGACY];
-    if !accepted_versions.contains(&manifest.version) {
+    if !BACKUP_VERSIONS_ACEITAS.contains(&manifest.version) {
         return Err(AppError::bad_request(format!(
             "Versao de backup {} nao suportada.",
             manifest.version
@@ -286,21 +387,9 @@ pub async fn restore_backup_with_password(
     // O cenario nao e exotico: e "reinstalei o Windows e copiei minha pasta de
     // dados". Os bancos sao arquivos e sobrevivem; o cofre de credenciais nao,
     // entao o pepper e regenerado com o mesmo user_id.
-    let old_pepper = match &manifest.pepper {
-        Some(hex) => {
-            let bytes = hex_decode(hex)?;
-            if bytes.len() == 32 {
-                let mut p = [0u8; 32];
-                p.copy_from_slice(&bytes);
-                Some(p)
-            } else {
-                None
-            }
-        }
-        None => None,
-    };
+    let old_key = chave_de_origem(&manifest, user_id, password)?;
 
-    if let Some(old_pepper) = old_pepper {
+    if let Some(old_key) = old_key {
         // O banco dentro do backup tem o schema da versao que o gerou, que pode
         // nao ter `patients.key_version` (criada na migration 14). Subir as
         // migrations na copia primeiro deixa o schema atual antes da conversao,
@@ -309,13 +398,13 @@ pub async fn restore_backup_with_password(
         let staged = crate::db::init_database(&staged_url)
             .await
             .map_err(|e| AppError::internal(format!("Erro ao preparar copia do backup: {}", e)))?;
-        let report = crypto::reencrypt_all_pii(&staged, &old_pepper, user_id).await;
+        let report = crypto::reencrypt_all_pii(&staged, &old_key, user_id).await;
         staged.close().await;
         let report = report?;
         if report.patients > 0 || report.session_records > 0 {
             tracing::info!(
-                "[Backup] Pepper do backup difere do atual; re-cifrados {} paciente(s) e {} \
-                 prontuario(s) na copia antes de importar.",
+                "[Backup] A chave do backup difere da desta maquina; re-cifrados {} \
+                 paciente(s) e {} prontuario(s) na copia antes de importar.",
                 report.patients,
                 report.session_records
             );
@@ -327,7 +416,7 @@ pub async fn restore_backup_with_password(
     // e a unica forma de nao destruir os anexos existentes por causa de uma
     // falha de conversao.
     let staged_storage = restore_root.join("storage");
-    stage_storage(&mut archive, &manifest, &staged_storage, old_pepper, user_id).await?;
+    stage_storage(&mut archive, &manifest, &staged_storage, old_key, user_id).await?;
 
     import_database(db, &db_path).await?;
     swap_storage(&staged_storage, &config.storage_dir.join(user_id)).await?;
@@ -338,6 +427,13 @@ pub async fn restore_backup_with_password(
     // fails over it.
     if let Err(e) = crate::features::patients::migrate_plaintext_pii(db, user_id).await {
         tracing::warn!("[Backup] Falha ao migrar PII em texto claro apos restauracao: {}", e);
+    }
+
+    // O indice de busca nao vem no bundle — e derivado, e os tokens do backup foram
+    // gerados com outra chave. Reconstruir aqui e o que faz a busca voltar a
+    // funcionar logo apos restaurar, sem esperar o proximo login.
+    if let Err(e) = crate::features::patients::reindex_search_tokens(db, user_id).await {
+        tracing::warn!("[Backup] Falha ao reindexar a busca apos restauracao: {}", e);
     }
 
     audit::write_audit_event(
@@ -472,7 +568,13 @@ const RESTORE_TABLE_ORDER: &[&str] = &[
     "payments",
     "appointments",
     "recurring_series",
-    "patient_search_tokens",
+    // `patient_search_tokens` NAO entra aqui de proposito.
+//
+// E indice derivado, nao fonte de verdade: `reindex_search_tokens` o reconstroi apos
+// o restore, com a chave desta maquina. Importar as linhas do backup seria pior de
+// duas formas — os tokens vem de outra chave e nao casariam com nada, e um bundle
+// anterior a migration 15 nao tem a coluna `user_id`, que e NOT NULL aqui, o que
+// abortaria o restore inteiro em `import_attached_database`.
     "patients",
     "users",
 ];
@@ -677,7 +779,7 @@ async fn import_attached_database(conn: &mut sqlx::SqliteConnection) -> Result<(
 }
 
 /// Extrai os anexos do bundle para uma area de staging, convertendo a chave
-/// quando o pepper do backup difere do atual.
+/// quando a chave do backup difere da desta maquina.
 ///
 /// Nada dos anexos reais e tocado aqui: se a conversao falhar, quem chama
 /// retorna erro e o que estava em disco continua intacto.
@@ -685,7 +787,7 @@ async fn stage_storage<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     manifest: &BackupManifest,
     staging_root: &Path,
-    old_pepper: Option<[u8; 32]>,
+    old_key: Option<[u8; 32]>,
     user_id: &str,
 ) -> Result<(), AppError> {
     tokio::fs::create_dir_all(staging_root)
@@ -702,9 +804,9 @@ async fn stage_storage<R: Read + std::io::Seek>(
                 .map_err(|e| AppError::internal(format!("Erro ao criar diretorio de anexo: {}", e)))?;
         }
         let bytes = read_zip_entry(archive, path)?;
-        let bytes = match old_pepper {
-            Some(p) => {
-                let out = crypto::reencrypt_file_bytes(&bytes, &p, user_id).map_err(|_| {
+        let bytes = match old_key {
+            Some(k) => {
+                let out = crypto::reencrypt_file_bytes(&bytes, &k, user_id).map_err(|_| {
                     AppError::bad_request(format!(
                         "Nao foi possivel converter o anexo '{}' para a chave desta maquina. \
                          Nada foi alterado.",
@@ -1148,6 +1250,11 @@ mod tests {
         let (_dir, db, config) = test_db("backup-encrypted").await;
         let user_id = "550e8400-e29b-41d4-a716-446655440001";
         seed_user(&db, user_id).await;
+        // Um backup cifrado precisa de pepper: e dele que sai a chave que entra no
+        // envelope. Antes o campo simplesmente ficava `None` quando o pepper nao
+        // estava inicializado, e o bundle saia sem material de chave nenhum — o
+        // restore em outra maquina deixava tudo ilegivel, em silencio.
+        crate::crypto::set_pepper(&[5u8; 32]);
 
         let backup = super::create_backup_with_password(&db, &config, user_id, Some("minha-senha-12c"))
             .await
@@ -1158,7 +1265,16 @@ mod tests {
         assert!(backup.manifest.encrypted == Some(true));
         assert_eq!(backup.manifest.kdf, Some("argon2id".into()));
         assert!(backup.manifest.salt.is_some());
-        // pepper field is present but might be None if no pepper is set globally
+        // O bundle carrega o envelope da chave do usuario, e nao o pepper mestre.
+        assert!(
+            backup.manifest.envelope.is_some(),
+            "um backup cifrado precisa carregar o envelope de chave"
+        );
+        assert!(backup.manifest.envelope_salt.is_some());
+        assert!(
+            backup.manifest.pepper.is_none(),
+            "o pepper mestre nao pode mais ser escrito no manifesto"
+        );
         // Verify format: ATND magic + salt + encrypted data
         assert!(backup.bytes.starts_with(b"ATND"));
         assert_eq!(&backup.bytes[4..20].len(), &16); // salt
@@ -1180,7 +1296,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(manifest.version, 2);
+        assert_eq!(manifest.version, 3);
         assert_eq!(manifest.user_id, user_id);
 
         let restored_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ?")
@@ -1333,7 +1449,7 @@ mod tests {
         file_hashes.insert(super::DB_ENTRY.to_string(), super::sha256_hex(&db_bytes));
 
         let manifest = super::BackupManifest {
-            version: super::BACKUP_VERSION_LEGACY,
+            version: 1,
             created_at: "2024-01-03T08:30:00.000Z".into(),
             user_id: user_id.to_string(),
             app_version: "1.0.0".into(),
@@ -1343,6 +1459,8 @@ mod tests {
             salt: None,
             pepper: None,
             pepper_fingerprint: None,
+            envelope: None,
+            envelope_salt: None,
         };
 
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -1464,6 +1582,23 @@ mod tests {
                 .is_err(),
             "senha vazia deve ser rejeitada"
         );
+
+        // A fronteira exata: a tela pede 12 e o servidor aceitava 8, entao uma
+        // chamada direta a API gerava um bundle completo com senha de 8 a 11
+        // caracteres. Fixar os dois lados do limite impede que o numero volte a
+        // divergir sem ninguem notar.
+        assert!(
+            super::create_backup_with_password(&db, &config, user_id, Some("onzecaract1"))
+                .await
+                .is_err(),
+            "11 caracteres devem ser rejeitados"
+        );
+        assert!(
+            super::create_backup_with_password(&db, &config, user_id, Some("dozecaracte1"))
+                .await
+                .is_ok(),
+            "12 caracteres devem ser aceitos"
+        );
     }
 
     #[tokio::test]
@@ -1481,5 +1616,154 @@ mod tests {
         let result = super::restore_backup(&r_db, &r_cfg, user_id, &backup.bytes).await;
         assert!(result.is_err());
         drop(r_dir);
+    }
+
+    /// O manifesto nao pode mais carregar a raiz de derivacao da maquina.
+    ///
+    /// Ate a v2 ele trazia o pepper mestre em hex: quem quebrasse a senha de **um**
+    /// backup obtinha a chave de todos os usuarios daquela instalacao, e ela seguia
+    /// valendo para os bancos que continuavam la. Este teste inspeciona o JSON cru
+    /// dentro do ZIP, e nao a struct, porque o que importa e o que foi para o disco.
+    #[tokio::test]
+    async fn the_manifest_no_longer_carries_the_master_pepper() {
+        let (_dir, db, config) = test_db("backup-sem-pepper").await;
+        let user_id = "550e8400-e29b-41d4-a716-446655440001";
+        seed_user(&db, user_id).await;
+        crate::crypto::set_pepper(&[5u8; 32]);
+
+        let bundle =
+            super::create_backup_with_password(&db, &config, user_id, Some("senha-de-doze1"))
+                .await
+                .unwrap();
+
+        // Desfaz a cifragem do bundle para chegar ao manifesto.
+        let salt = &bundle.bytes[4..4 + super::SALT_SIZE];
+        let chave = crate::crypto::derive_key_from_password("senha-de-doze1", salt).unwrap();
+        let zip_bytes =
+            crate::crypto::decrypt_file(&bundle.bytes[4 + super::SALT_SIZE..], &chave).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).unwrap();
+        let mut json = String::new();
+        {
+            use std::io::Read;
+            archive
+                .by_name(super::MANIFEST_ENTRY)
+                .unwrap()
+                .read_to_string(&mut json)
+                .unwrap();
+        }
+
+        assert!(
+            !json.contains("\"pepper\""),
+            "o campo pepper nao pode ser escrito: {json}"
+        );
+        assert!(json.contains("\"envelope\""), "o envelope precisa estar la");
+
+        // E o valor gravado nao pode ser o pepper, nem a chave em claro.
+        let pepper_hex = super::hex_encode(&[5u8; 32]);
+        assert!(!json.contains(&pepper_hex), "o pepper vazou em hex");
+        let chave_do_usuario = crate::crypto::derive_user_key(user_id).unwrap();
+        assert!(
+            !json.contains(&super::hex_encode(&chave_do_usuario)),
+            "a chave do usuario vazou em claro"
+        );
+    }
+
+    /// Um bundle cifrado sem nenhum material de chave restaurava em silencio: a
+    /// re-cifra era pulada e o conteudo ficava ilegivel sob a chave da maquina nova,
+    /// sem erro e sem aviso. Agora o caso e detectavel.
+    #[tokio::test]
+    async fn restoring_an_encrypted_bundle_without_key_material_is_visible() {
+        let manifesto = super::BackupManifest {
+            version: super::BACKUP_VERSION,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            user_id: "550e8400-e29b-41d4-a716-446655440001".into(),
+            app_version: "test".into(),
+            file_hashes: std::collections::BTreeMap::new(),
+            encrypted: Some(true),
+            kdf: Some("argon2id".into()),
+            salt: Some(super::hex_encode(&[0u8; super::SALT_SIZE])),
+            pepper: None,
+            pepper_fingerprint: None,
+            envelope: None,
+            envelope_salt: None,
+        };
+
+        let chave = super::chave_de_origem(&manifesto, &manifesto.user_id, Some("qualquer"))
+            .expect("sem material de chave nao e erro, e ausencia");
+        assert!(
+            chave.is_none(),
+            "sem envelope e sem pepper nao ha chave de origem"
+        );
+    }
+
+    /// O caminho legado tem de continuar derivando a chave a partir do pepper, ou
+    /// todo backup ja emitido — e as fixtures congeladas — param de restaurar.
+    #[tokio::test]
+    async fn legacy_manifests_still_yield_the_old_key() {
+        crate::crypto::set_pepper(&[5u8; 32]);
+        let user_id = "550e8400-e29b-41d4-a716-446655440001";
+        let pepper_antigo = [0x21u8; 32];
+
+        let manifesto = super::BackupManifest {
+            version: 2,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            user_id: user_id.into(),
+            app_version: "1.0.19".into(),
+            file_hashes: std::collections::BTreeMap::new(),
+            encrypted: Some(true),
+            kdf: Some("argon2id".into()),
+            salt: Some(super::hex_encode(&[0u8; super::SALT_SIZE])),
+            pepper: Some(super::hex_encode(&pepper_antigo)),
+            pepper_fingerprint: None,
+            envelope: None,
+            envelope_salt: None,
+        };
+
+        let chave = super::chave_de_origem(&manifesto, user_id, Some("qualquer"))
+            .unwrap()
+            .expect("manifesto v2 tem de produzir a chave antiga");
+        assert_eq!(
+            chave,
+            crate::crypto::derive_key_from_pepper(user_id, &pepper_antigo).unwrap()
+        );
+    }
+
+    /// Um envelope que abre mas nao tem 32 bytes e um bundle adulterado. Aceitar
+    /// isso deixaria a re-cifra rodar com uma chave truncada e destruir os dados.
+    #[tokio::test]
+    async fn a_malformed_envelope_is_rejected() {
+        let user_id = "550e8400-e29b-41d4-a716-446655440001";
+        let salt = [7u8; super::SALT_SIZE];
+        let chave_do_envelope =
+            crate::crypto::derive_key_from_password("senha-de-doze1", &salt).unwrap();
+        // 16 bytes em vez de 32.
+        let envelope = crate::crypto::encrypt_file(&[1u8; 16], &chave_do_envelope).unwrap();
+
+        let manifesto = super::BackupManifest {
+            version: super::BACKUP_VERSION,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            user_id: user_id.into(),
+            app_version: "test".into(),
+            file_hashes: std::collections::BTreeMap::new(),
+            encrypted: Some(true),
+            kdf: Some("argon2id".into()),
+            salt: Some(super::hex_encode(&[0u8; super::SALT_SIZE])),
+            pepper: None,
+            pepper_fingerprint: None,
+            envelope: Some(super::hex_encode(&envelope)),
+            envelope_salt: Some(super::hex_encode(&salt)),
+        };
+
+        assert!(
+            super::chave_de_origem(&manifesto, user_id, Some("senha-de-doze1")).is_err(),
+            "envelope de tamanho errado tem de ser recusado"
+        );
+
+        // E a senha errada nao pode virar uma chave qualquer.
+        assert!(
+            super::chave_de_origem(&manifesto, user_id, Some("senha-errada-12")).is_err(),
+            "senha errada tem de falhar ao abrir o envelope"
+        );
     }
 }
