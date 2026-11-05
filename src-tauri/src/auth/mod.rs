@@ -72,8 +72,11 @@ async fn register_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<RegisterInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    // Chave normalizada como o auth_service normaliza o e-mail; com o valor cru,
+    // "Fulano@x.com" e "fulano@x.com " caiam em contadores diferentes.
+    let email_key = input.email.trim().to_lowercase();
     crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:register", &input.email, 3, 3600_000,
+        &state.auth_db, "auth:register", &email_key, 3, 3_600_000,
     )
     .await?;
 
@@ -123,8 +126,11 @@ async fn login_handler(
     State(state): State<Arc<AppState>>,
     Json(input): Json<LoginInput>,
 ) -> Result<Json<ActionResponse<serde_json::Value>>, AppError> {
+    // Chave normalizada: com o e-mail cru, variar maiusculas/espacos dava
+    // contadores novos para a mesma conta e anulava o limite de forca bruta.
+    let email_key = input.email.trim().to_lowercase();
     crate::rate_limit::enforce_rate_limit(
-        &state.auth_db, "auth:login", &input.email, 5, 600_000,
+        &state.auth_db, "auth:login", &email_key, 5, 600_000,
     )
     .await?;
 

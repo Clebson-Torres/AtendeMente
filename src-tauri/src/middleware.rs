@@ -1,9 +1,40 @@
 use axum::{
     extract::Request,
-    http::HeaderValue,
+    http::{header::HOST, HeaderValue, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
+
+/// O servidor escuta so em loopback, mas isso nao basta contra DNS rebinding:
+/// uma pagina em `http://rebind.atacante.com:3001` cujo DNS passa a apontar para
+/// 127.0.0.1 fica same-origin com a API e pode chamar login/register/recover.
+/// O navegador ainda manda o nome do atacante no `Host`, entao basta aceitar
+/// apenas nomes de loopback.
+pub fn is_loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        // IPv6 literal: "[::1]:3001" -> "::1"
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, port)) if port.is_empty() || port.starts_with(':') => ip,
+            _ => return false,
+        },
+        None => host.rsplit_once(':').map_or(host, |(name, _port)| name),
+    };
+    let name = name.to_ascii_lowercase();
+    matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1" | "tauri.localhost")
+}
+
+pub async fn require_loopback_host(request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !is_loopback_host(host) {
+        tracing::warn!("[Host] Requisicao recusada com Host nao-loopback: {:?}", host);
+        return (StatusCode::MISDIRECTED_REQUEST, "Host nao permitido.").into_response();
+    }
+    next.run(request).await
+}
 
 pub async fn security_headers(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
@@ -167,5 +198,24 @@ mod tests {
 
         assert!(!csp.contains("fonts.googleapis.com"), "CSP ainda libera o Google Fonts");
         assert!(!csp.contains("fonts.gstatic.com"), "CSP ainda libera o gstatic");
+    }
+
+    #[test]
+    fn accepts_only_loopback_hosts() {
+        use super::is_loopback_host;
+        for ok in ["localhost:3001", "127.0.0.1:3001", "[::1]:3001", "localhost", "LOCALHOST:3001", "tauri.localhost"] {
+            assert!(is_loopback_host(ok), "{} deveria ser aceito", ok);
+        }
+        for bad in [
+            "",
+            "rebind.atacante.com:3001",
+            "evil.com",
+            "localhost.evil.com:3001",
+            "127.0.0.1.nip.io:3001",
+            "192.168.0.10:3001",
+            "[::1]evil:3001",
+        ] {
+            assert!(!is_loopback_host(bad), "{:?} deveria ser recusado", bad);
+        }
     }
 }

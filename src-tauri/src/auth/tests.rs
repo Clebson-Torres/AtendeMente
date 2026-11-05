@@ -606,4 +606,30 @@ mod tests {
             );
         }
     }
+    /// Variar caixa e espacos no e-mail nao pode zerar o contador do login.
+    #[tokio::test]
+    async fn login_rate_limit_ignores_email_case_and_spaces() {
+        let (_dir, state) = test_state().await;
+        let variantes = ["vitima@x.com", "Vitima@x.com", " VITIMA@x.com", "vitima@X.com ", "ViTiMa@x.com"];
+        for email in variantes {
+            let (status, _) = post_auth(
+                state.clone(),
+                "/auth/login",
+                serde_json::json!({"email": email, "password": "errada-errada"}),
+            )
+            .await;
+            assert_ne!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        }
+        let (status, _) = post_auth(
+            state.clone(),
+            "/auth/login",
+            serde_json::json!({"email": "VITIMA@X.COM", "password": "errada-errada"}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "a sexta tentativa na mesma conta tem de ser barrada"
+        );
+    }
 }
