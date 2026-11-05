@@ -111,21 +111,11 @@ fn is_allowed_origin(origin: &[u8]) -> bool {
         None => host.split(':').next().unwrap_or(host),
     };
 
-    if host == "localhost"
-        || host == "tauri.localhost"
-        || host.ends_with(".localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-    {
-        return true;
-    }
-
-    // Private ranges: unreachable in practice while the server is loopback-only.
-    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        return ip.is_private() || ip.is_loopback() || ip.is_link_local();
-    }
-
-    false
+    // So o shell do app e as origens de loopback (dev em :1420, E2E e o servidor
+    // standalone). IPs de rede privada e `*.localhost` saíram: o acesso mobile
+    // foi removido, e eles so deixavam uma pagina da intranet ou a interface de
+    // um roteador ler as respostas de login/register/recover.
+    matches!(host, "localhost" | "tauri.localhost" | "127.0.0.1" | "::1")
 }
 
 fn resolve_frontend_dist() -> PathBuf {
@@ -383,6 +373,7 @@ pub async fn run_server(state: Arc<AppState>, _app: Option<AppHandle>, ready: Op
         // what serves index.html — the HTML was going out with no security
         // headers at all.
         .layer(axum_middleware::from_fn(crate::middleware::security_headers))
+        .layer(axum_middleware::from_fn(crate::middleware::require_loopback_host))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(
@@ -557,10 +548,11 @@ mod cors_tests {
     }
 
     #[test]
-    fn allows_private_lan_hosts_for_mobile_access() {
-        assert!(is_allowed_origin(b"http://192.168.0.42:3001"));
-        assert!(is_allowed_origin(b"http://10.0.0.7:3001"));
-        assert!(is_allowed_origin(b"http://172.16.5.9:3001"));
+    fn rejects_private_lan_hosts_now_that_mobile_access_is_gone() {
+        assert!(!is_allowed_origin(b"http://192.168.0.42:3001"));
+        assert!(!is_allowed_origin(b"http://10.0.0.7:3001"));
+        assert!(!is_allowed_origin(b"http://172.16.5.9:3001"));
+        assert!(!is_allowed_origin(b"http://evil.localhost:3001"));
     }
 
     #[test]

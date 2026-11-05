@@ -29,18 +29,29 @@ async function request<T>(
 
   const res = await fetch(`${API}${path}`, { ...options, headers });
 
+  // O corpo só pode ser lido uma vez: ler como texto e só então tentar JSON.
+  // Antes, um res.json() falho seguido de res.text() lançava "body used already"
+  // e escondia a mensagem real do servidor.
+  const text = await res.text();
   let json: ApiResponse<T>;
   try {
-    json = await res.json();
+    json = JSON.parse(text);
   } catch {
-    const text = await res.text();
-    throw new Error(text || `Erro ${res.status}`);
+    throw new ApiError(text || `Erro ${res.status}`, res.status);
   }
 
   if (!res.ok || !json.success) {
-    throw new Error(json.message || "Erro na requisição");
+    throw new ApiError(json.message || "Erro na requisição", res.status);
   }
   return json.data;
+}
+
+/** Erro de API com o status HTTP, para distinguir "não existe" (404) de falha real. */
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
 }
 
 export const api = {

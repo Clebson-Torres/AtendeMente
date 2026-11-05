@@ -164,6 +164,11 @@ pub fn decrypt_content_with_key(payload: &EncryptedPayload, key: &[u8; 32]) -> R
     let iv = BASE64
         .decode(&payload.iv)
         .map_err(|_| AppError::bad_request("Invalid IV encoding."))?;
+    // Nonce::from_slice entra em panic com tamanho diferente de 12; um IV
+    // corrompido (ou vindo de um restore forjado) deve virar erro, nao derrubar a task.
+    if iv.len() != 12 {
+        return Err(AppError::bad_request("Invalid IV length."));
+    }
     let nonce = Nonce::from_slice(&iv);
 
     let mut ciphertext = BASE64
@@ -231,7 +236,7 @@ pub fn encrypt_file(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
 }
 
 pub fn decrypt_file(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
-    if data.first() != Some(&0x01) || data.len() < 29 {
+    if !is_encrypted_file(data) {
         return Ok(data.to_vec());
     }
     let (_, rest) = data.split_at(1);
@@ -397,11 +402,34 @@ pub fn reencrypt_file_bytes(
     user_id: &str,
 ) -> Result<Vec<u8>, AppError> {
     let new_key = derive_user_key(user_id)?;
-    if old_key == &new_key {
+    reencrypt_file_bytes_with(bytes, old_key, &new_key)
+}
+
+/// Nucleo puro de `reencrypt_file_bytes`. Sempre decifra e recifra, mesmo quando
+/// `old_key == new_key`: o atalho que devolvia os bytes intactos nesse caso
+/// instalava em texto claro os anexos de um backup feito apos login e restaurado
+/// na mesma maquina (o caso mais comum de restore).
+pub fn reencrypt_file_bytes_with(
+    bytes: &[u8],
+    old_key: &[u8; 32],
+    new_key: &[u8; 32],
+) -> Result<Vec<u8>, AppError> {
+    let plaintext = decrypt_file(bytes, old_key)?;
+    encrypt_file(&plaintext, new_key)
+}
+
+/// Para anexos de backups sem chave de origem (v1): o que estiver em texto claro
+/// e cifrado com a chave atual; o que ja estiver cifrado fica como esta, porque
+/// nao ha chave para converte-lo.
+pub fn encrypt_file_if_plaintext(bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, AppError> {
+    if is_encrypted_file(bytes) {
         return Ok(bytes.to_vec());
     }
-    let plaintext = decrypt_file(bytes, old_key)?;
-    encrypt_file(&plaintext, &new_key)
+    encrypt_file(bytes, key)
+}
+
+fn is_encrypted_file(data: &[u8]) -> bool {
+    data.first() == Some(&0x01) && data.len() >= 29
 }
 
 pub fn get_pepper() -> Option<&'static [u8; 32]> {
@@ -534,4 +562,47 @@ mod tests {
         let key4 = derive_key_from_password("outra-senha", b"0123456789abcdef").unwrap();
         assert_ne!(key1, key4);
     }
+    #[test]
+    fn reencrypt_with_same_key_encrypts_plaintext_attachment() {
+        // Backup feito apos login guarda o anexo em claro; restore na mesma
+        // maquina tem old_key == new_key. O resultado precisa sair cifrado.
+        let key = test_key();
+        let plaintext = b"%PDF-1.7 laudo do paciente";
+        let out = reencrypt_file_bytes_with(plaintext, &key, &key).unwrap();
+        assert!(is_encrypted_file(&out), "anexo restaurado ficou em texto claro");
+        assert_eq!(decrypt_file(&out, &key).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn reencrypt_with_same_key_keeps_encrypted_attachment_readable() {
+        let key = test_key();
+        let enc = encrypt_file(b"conteudo", &key).unwrap();
+        let out = reencrypt_file_bytes_with(&enc, &key, &key).unwrap();
+        assert_eq!(decrypt_file(&out, &key).unwrap(), b"conteudo");
+    }
+
+    #[test]
+    fn reencrypt_converts_between_keys() {
+        let enc = encrypt_file(b"conteudo", &test_key()).unwrap();
+        let out = reencrypt_file_bytes_with(&enc, &test_key(), &wrong_key()).unwrap();
+        assert_eq!(decrypt_file(&out, &wrong_key()).unwrap(), b"conteudo");
+    }
+
+    #[test]
+    fn encrypt_if_plaintext_only_touches_plaintext() {
+        let key = test_key();
+        let out = encrypt_file_if_plaintext(b"texto claro", &key).unwrap();
+        assert_eq!(decrypt_file(&out, &key).unwrap(), b"texto claro");
+        let enc = encrypt_file(b"x", &wrong_key()).unwrap();
+        assert_eq!(encrypt_file_if_plaintext(&enc, &key).unwrap(), enc);
+    }
+
+    #[test]
+    fn decrypt_content_with_bad_iv_length_errors_instead_of_panicking() {
+        let key = test_key();
+        let mut payload = encrypt_content_with_key("dados", &key).unwrap();
+        payload.iv = BASE64.encode([0u8; 5]);
+        assert!(decrypt_content_with_key(&payload, &key).is_err());
+    }
+
 }

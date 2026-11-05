@@ -816,7 +816,11 @@ async fn stage_storage<R: Read + std::io::Seek>(
                 convertidos += 1;
                 out
             }
-            None => bytes,
+            // Backup sem chave de origem (v1): nunca instalar anexo em texto claro.
+            None => {
+                let key = crypto::derive_user_key(user_id)?;
+                crypto::encrypt_file_if_plaintext(&bytes, &key)?
+            }
         };
         tokio::fs::write(&target, bytes)
             .await

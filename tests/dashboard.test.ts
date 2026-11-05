@@ -28,7 +28,7 @@ describe("dashboard API", () => {
     };
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: mockData }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: mockData })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
@@ -53,7 +53,7 @@ describe("dashboard API", () => {
     };
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: mockData }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: mockData })),
     });
     vi.stubGlobal("fetch", mockFetch);
 

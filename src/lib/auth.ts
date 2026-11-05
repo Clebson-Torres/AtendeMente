@@ -31,13 +31,20 @@ function notify(user: AuthUser) {
 
 // ─── API helpers ─────────────────────────────────────────────────────────
 
-async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
+// O método precisa ser explícito: antes ele era deduzido da presença de corpo,
+// e /auth/lock e /auth/logout (rotas POST sem corpo) saíam como GET, recebiam
+// 405 e o erro era engolido — o servidor nunca bloqueava nem encerrava a sessão.
+async function apiRequest<T>(
+  path: string,
+  body?: unknown,
+  method: "GET" | "POST" = body !== undefined ? "POST" : "GET",
+): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getStoredToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
   const res = await fetch(`${API}${path}`, {
-    method: body ? "POST" : "GET",
+    method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -206,7 +213,7 @@ export async function logout() {
   const token = getStoredToken();
   if (token) {
     try {
-      await apiRequest("/auth/logout");
+      await apiRequest("/auth/logout", undefined, "POST");
     } catch {
       // Ignore errors, clear locally anyway
     }
@@ -216,7 +223,7 @@ export async function logout() {
 }
 
 export async function lock(): Promise<void> {
-  await apiRequest<void>("/auth/lock");
+  await apiRequest<void>("/auth/lock", undefined, "POST");
 }
 
 export async function unlock(password: string): Promise<void> {

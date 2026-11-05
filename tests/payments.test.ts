@@ -13,7 +13,7 @@ describe("payments list with month/year filter", () => {
   it("includes month and year params when provided", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: [] }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: [] })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
@@ -27,7 +27,7 @@ describe("payments list with month/year filter", () => {
   it("omits month/year when not provided", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: [] }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: [] })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
@@ -43,7 +43,7 @@ describe("payments summary with month/year filter", () => {
   it("includes month and year params", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: { paid_cents: 0, pending_cents: 0 } }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: { paid_cents: 0, pending_cents: 0 } })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
@@ -57,7 +57,7 @@ describe("payments summary with month/year filter", () => {
   it("returns correct financial summary shape", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: { paid_cents: 50000, pending_cents: 15000 } }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: { paid_cents: 50000, pending_cents: 15000 } })),
     });
     vi.stubGlobal("fetch", mockFetch);
 

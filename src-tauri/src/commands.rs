@@ -26,6 +26,7 @@ async fn validate_token_and_get_db(
     let (user_id, _, _) = auth_service::validate_session(&state.auth_db, token)
         .await
         .map_err(|e| format!("Unauthorized: {}", e))?;
+    crate::api::routes::require_unlocked(&user_id).map_err(|e| format!("Unauthorized: {}", e))?;
 
     let db = state
         .get_or_open_user_db(&user_id)

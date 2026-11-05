@@ -68,11 +68,23 @@ async fn get_authenticated_user(
             .await
             .map_err(|e| AppError::unauthorized(e))?;
 
+    require_unlocked(&user_id)?;
+
     Ok(crate::features::auth::AuthenticatedUser {
         id: user_id,
         email,
         full_name: Some(full_name),
     })
+}
+
+/// Sessao valida nao basta: com a tela bloqueada (ou apos reiniciar o app) a
+/// chave de dados sai do cache, e as rotas de dados precisam recusar o token.
+/// Sem isto, `POST /backup` com o token de uma sessao bloqueada exportava o banco
+/// inteiro, porque o backup deriva a chave do pepper e nao depende do cache.
+pub(crate) fn require_unlocked(user_id: &str) -> Result<(), AppError> {
+    crate::crypto::load_key(user_id)
+        .map(|_| ())
+        .map_err(|_| AppError::unauthorized("Sessao bloqueada. Desbloqueie para continuar."))
 }
 
 // ─── Router ─────────────────────────────────────────────────────────────────
