@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext, Suspense, lazy } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { onAuthChange, restoreSession, lock } from "./lib/auth";
+import { onAuthChange, restoreSession, lock, logout } from "./lib/auth";
 import Layout from "./components/Layout";
 import ToastContainer from "./components/ui/Toast";
 import LockScreen from "./components/LockScreen";
@@ -80,10 +80,12 @@ export default function App() {
       timeout = setTimeout(async () => {
         try {
           await lock();
+          setLocked(true);
         } catch {
-          // ignore — session may be expired
+          // Se o servidor não confirmou o bloqueio, a chave pode continuar
+          // carregada lá: falhar fechado, descartando o token e exigindo login.
+          await logout();
         }
-        setLocked(true);
       }, IDLE_TIMEOUT_MS);
     };
 
@@ -105,6 +107,9 @@ export default function App() {
     <AuthContext.Provider value={{ user, loading }}>
       {locked && <LockScreen onUnlock={() => setLocked(false)} />}
       <ToastContainer />
+      {/* Com a tela bloqueada, o conteúdo por trás do overlay não pode receber
+          foco nem cliques (antes dava para usar Tab/Enter nos botões de baixo). */}
+      <div {...(locked ? { inert: "", "aria-hidden": true } : {})}>
       <Suspense fallback={<div className="flex h-screen items-center justify-center"><Skeleton className="h-8 w-48" /></div>}>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -133,6 +138,7 @@ export default function App() {
           />
         </Routes>
       </Suspense>
+      </div>
     </AuthContext.Provider>
   );
 }

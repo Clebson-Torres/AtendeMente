@@ -316,7 +316,7 @@ describe("auth login flow", () => {
     expect(notifiedUser).toBeNull();
     const call = fetchCalls.find((c) => c.url === `${API}/auth/logout`);
     expect(call).toBeDefined();
-    expect(call!.method).toBe("GET");
+    expect(call!.method).toBe("POST");
   });
 
   it("logout without token skips API request", async () => {
@@ -379,7 +379,7 @@ describe("auth login flow", () => {
 
     const call = fetchCalls.find((c) => c.url === `${API}/auth/lock`);
     expect(call).toBeDefined();
-    expect(call!.method).toBe("GET");
+    expect(call!.method).toBe("POST");
   });
 
   it("unlock calls /auth/unlock with password", async () => {

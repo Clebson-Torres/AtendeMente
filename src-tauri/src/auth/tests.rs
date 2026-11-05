@@ -556,4 +556,54 @@ mod tests {
             "a quarta tentativa com e-mail inexistente tem de ser barrada"
         );
     }
+    /// Envia uma requisicao com Bearer para o app completo (auth + rotas de dados).
+    async fn send_with_token(
+        state: std::sync::Arc<crate::AppState>,
+        method: &str,
+        path: &str,
+        token: &str,
+    ) -> axum::http::StatusCode {
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .merge(crate::auth::create_auth_router(state.clone()))
+            .merge(crate::api::routes::create_router(state));
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    /// Bloquear a tela tem de fechar o acesso aos dados no servidor, nao so
+    /// esconder a UI: antes o token de uma sessao bloqueada ainda gerava backup.
+    #[tokio::test]
+    async fn locked_session_cannot_reach_data_routes() {
+        crate::crypto::set_pepper(&[0xabu8; 32]);
+        let (_dir, state) = test_state().await;
+
+        let reg = auth_service::register(&state.auth_db, "lock@test.com", "senha-de-teste", "Lock")
+            .await
+            .unwrap();
+        crate::crypto::init_user_crypto(&reg.user_id).unwrap();
+
+        let antes = send_with_token(state.clone(), "GET", "/patients", &reg.token).await;
+        assert_eq!(antes, axum::http::StatusCode::OK);
+
+        let lock = send_with_token(state.clone(), "POST", "/auth/lock", &reg.token).await;
+        assert_eq!(lock, axum::http::StatusCode::OK);
+
+        for (metodo, rota) in [("GET", "/patients"), ("POST", "/backup"), ("GET", "/backup/config")] {
+            assert_eq!(
+                send_with_token(state.clone(), metodo, rota, &reg.token).await,
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{} {} respondeu com a sessao bloqueada",
+                metodo,
+                rota
+            );
+        }
+    }
 }
