@@ -180,21 +180,33 @@ fn apagar_entrada(conta: &str) -> Result<(), String> {
     }
 }
 
-fn load_pepper_from_keychain() -> Option<[u8; 32]> {
-    Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
-        .ok()
-        .and_then(|entry| entry.get_password().ok())
-        .and_then(|password| {
-            BASE64.decode(&password).ok().and_then(|bytes| {
-                if bytes.len() == 32 {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes);
-                    Some(key)
-                } else {
-                    None
-                }
-            })
-        })
+/// Le o pepper do cofre distinguindo "nao existe" de "nao consegui ler".
+///
+/// So `NoEntry` autoriza gerar um pepper novo. Antes qualquer erro virava `None`:
+/// um Secret Service travado no boot, um timeout de DBus ou um valor corrompido
+/// levavam o app a gerar e gravar um pepper novo POR CIMA do real — e todo
+/// prontuario, PII e anexo cifrado da maquina ficava ilegivel para sempre.
+fn load_pepper_from_keychain() -> Result<Option<[u8; 32]>, String> {
+    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        .map_err(|e| format!("Erro ao abrir o cofre de credenciais: {}", e))?;
+    classify_keychain_read(entry.get_password())
+}
+
+fn classify_keychain_read(
+    read: Result<String, keyring::Error>,
+) -> Result<Option<[u8; 32]>, String> {
+    let password = match read {
+        Ok(p) => p,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(e) => return Err(format!("Erro ao ler o pepper do cofre: {}", e)),
+    };
+    let bytes = BASE64
+        .decode(password.trim())
+        .map_err(|_| "O pepper no cofre nao e base64 valido.".to_string())?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|b: Vec<u8>| format!("O pepper no cofre tem {} bytes; esperado 32.", b.len()))?;
+    Ok(Some(key))
 }
 
 fn save_pepper_to_keychain(pepper: &[u8; 32]) -> bool {
@@ -255,8 +267,15 @@ fn load_or_generate_pepper() -> [u8; 32] {
     }
 
     // 2. Try keychain (OS-native secure storage)
-    if let Some(pepper) = load_pepper_from_keychain() {
-        return pepper;
+    match load_pepper_from_keychain() {
+        Ok(Some(pepper)) => return pepper,
+        Ok(None) => {}
+        // Nunca gerar um pepper novo quando o cofre falhou: se ja existe um,
+        // sobrescreve-lo destroi o acesso a todos os dados cifrados.
+        Err(e) => panic!(
+            "{}. O AtendeMente nao vai gerar uma chave nova, porque isso tornaria os              dados ja cifrados ilegiveis. Verifique o cofre de credenciais do sistema              (Gerenciador de Credenciais / Keychain / Secret Service) e abra o app de novo.",
+            e
+        ),
     }
 
     // 3. Try config file (legacy fallback + migration source)
@@ -265,10 +284,18 @@ fn load_or_generate_pepper() -> [u8; 32] {
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(cfg) = toml::from_str::<ConfigFile>(&content) {
                 if let Some(pepper_str) = cfg.master_pepper {
-                    if let Ok(pepper) = decode_hex_or_base64(&pepper_str) {
-                        // Migrate to keychain (keep config.toml as backup)
-                        save_pepper_to_keychain(&pepper);
-                        return pepper;
+                    match decode_hex_or_base64(&pepper_str) {
+                        Ok(pepper) => {
+                            // Migrate to keychain (keep config.toml as backup)
+                            save_pepper_to_keychain(&pepper);
+                            return pepper;
+                        }
+                        // Ha um pepper registrado, so que ilegivel: gerar outro por
+                        // cima perderia os dados cifrados com ele.
+                        Err(_) => panic!(
+                            "O master_pepper em {} esta corrompido. O AtendeMente nao vai                              gerar uma chave nova por cima dele.",
+                            path.display()
+                        ),
                     }
                 }
             }
@@ -437,6 +464,36 @@ impl AppConfig {
             "{}/{}/{}/{}.{}",
             user_id, patient_id, appointment_id, uuid, ext
         )))
+    }
+}
+
+#[cfg(test)]
+mod keychain_read_tests {
+    use super::classify_keychain_read;
+    use base64::Engine;
+
+    #[test]
+    fn only_a_missing_entry_allows_generating_a_new_pepper() {
+        assert_eq!(classify_keychain_read(Err(keyring::Error::NoEntry)), Ok(None));
+    }
+
+    #[test]
+    fn platform_failure_is_an_error_not_an_absent_pepper() {
+        let falha = keyring::Error::PlatformFailure("dbus timeout".into());
+        assert!(classify_keychain_read(Err(falha)).is_err());
+    }
+
+    #[test]
+    fn corrupted_values_are_errors() {
+        assert!(classify_keychain_read(Ok("nao-e-base64!!".into())).is_err());
+        let curto = super::BASE64.encode([7u8; 31]);
+        assert!(classify_keychain_read(Ok(curto)).is_err());
+    }
+
+    #[test]
+    fn valid_value_is_returned() {
+        let v = super::BASE64.encode([7u8; 32]);
+        assert_eq!(classify_keychain_read(Ok(v)), Ok(Some([7u8; 32])));
     }
 }
 
