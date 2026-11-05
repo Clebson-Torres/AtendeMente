@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { api, type AppointmentDetail as AppointmentDetailType } from "../lib/api";
+import { api, ApiError, type AppointmentDetail as AppointmentDetailType } from "../lib/api";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
 import TextArea from "../components/ui/TextArea";
@@ -57,7 +57,8 @@ export default function AppointmentDetail() {
   }
 
   const [recordContent, setRecordContent] = useState("");
-  const [recordLoading, setRecordLoading] = useState(false);
+  const [recordLoading, setRecordLoading] = useState(true);
+  const [recordError, setRecordError] = useState<string | null>(null);
   const [recordSaving, setRecordSaving] = useState(false);
 
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -89,14 +90,24 @@ export default function AppointmentDetail() {
   async function loadRecord() {
     if (!id) return;
     setRecordLoading(true);
+    setRecordError(null);
     try {
       const content = await api.records.get(id);
       setRecordContent(content);
-    } catch { setRecordContent(""); }
-    finally { setRecordLoading(false); }
+    } catch (e) {
+      // 404 = ainda não há prontuário: começa vazio. Qualquer outra falha bloqueia
+      // o Salvar, senão um textarea vazio sobrescreveria o prontuário existente.
+      if (e instanceof ApiError && e.status === 404) {
+        setRecordContent("");
+      } else {
+        setRecordError(e instanceof Error ? e.message : "Erro ao carregar o prontuário.");
+      }
+    } finally {
+      setRecordLoading(false);
+    }
   }
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); loadRecord(); }, [id]);
 
   async function onPay(data: PaymentInput) {
     if (!id) return;
@@ -348,6 +359,11 @@ export default function AppointmentDetail() {
         </div>
         {recordLoading ? (
           <Skeleton className="h-5 w-full" />
+        ) : recordError ? (
+          <div role="alert" className="text-sm text-red-700 space-y-2">
+            <p>Não foi possível carregar o prontuário: {recordError}</p>
+            <Button variant="secondary" onClick={loadRecord}>Tentar novamente</Button>
+          </div>
         ) : (
           <>
             <TextArea rows={12} placeholder="Registre aqui as anotações da sessão. O conteúdo será criptografado automaticamente." value={recordContent} onChange={(e) => setRecordContent(e.target.value)} className="font-mono text-sm" />

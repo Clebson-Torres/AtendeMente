@@ -2,10 +2,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { api } from "../src/lib/api";
+import { api, ApiError } from "../src/lib/api";
 
 // Mock modules
 vi.mock("../src/lib/api", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(message: string, public readonly status: number) {
+      super(message);
+    }
+  },
   api: {
     appointments: {
       get: vi.fn(),
@@ -73,6 +78,7 @@ describe("AppointmentDetail - Complete / No-show", () => {
     vi.clearAllMocks();
     (api.appointments.get as any).mockResolvedValue(mockAppointment);
     (api.files.list as any).mockResolvedValue([]);
+    (api.records.get as any).mockRejectedValue(new ApiError("Registro nao encontrado.", 404));
   });
 
   it("renders complete and no-show buttons when status is scheduled", async () => {
@@ -132,5 +138,38 @@ describe("AppointmentDetail - Complete / No-show", () => {
       });
       expect(screen.getByText("R$ 175,50")).toBeInTheDocument();
     });
+  });
+});
+
+describe("AppointmentDetail - Prontuário", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (api.appointments.get as any).mockResolvedValue(mockAppointment);
+    (api.files.list as any).mockResolvedValue([]);
+  });
+
+  it("carrega o prontuário existente ao abrir o atendimento", async () => {
+    (api.records.get as any).mockResolvedValue("Anotações da sessão anterior");
+    renderComponent();
+
+    expect(await screen.findByDisplayValue("Anotações da sessão anterior")).toBeInTheDocument();
+    expect(api.records.get).toHaveBeenCalledWith("appt-1");
+  });
+
+  it("começa vazio quando ainda não há prontuário (404)", async () => {
+    (api.records.get as any).mockRejectedValue(new ApiError("Registro nao encontrado.", 404));
+    renderComponent();
+
+    expect(await screen.findByRole("button", { name: "Salvar Prontuário" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Registre aqui/)).toHaveValue("");
+  });
+
+  it("não oferece Salvar se o carregamento falhar, para não sobrescrever o prontuário", async () => {
+    (api.records.get as any).mockRejectedValue(new ApiError("Falha ao decifrar", 500));
+    renderComponent();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Falha ao decifrar");
+    expect(screen.queryByRole("button", { name: "Salvar Prontuário" })).not.toBeInTheDocument();
+    expect(api.records.save).not.toHaveBeenCalled();
   });
 });

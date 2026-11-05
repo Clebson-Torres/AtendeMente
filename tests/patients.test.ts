@@ -13,7 +13,7 @@ describe("patients list with status filter", () => {
   it("includes status param when provided", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: { items: [], total: 0, page: 1, per_page: 50 } }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: { items: [], total: 0, page: 1, per_page: 50 } })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
@@ -27,7 +27,7 @@ describe("patients list with status filter", () => {
   it("omits status param when not provided", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ success: true, data: { items: [], total: 0, page: 1, per_page: 50 } }),
+      text: () => Promise.resolve(JSON.stringify({ success: true, data: { items: [], total: 0, page: 1, per_page: 50 } })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
